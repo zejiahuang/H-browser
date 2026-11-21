@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">氫</string>
+    <string name="app_name_full">氫 (H browser)</string>
+    <string name="search_widget_hint">搜尋或輸入網址</string>
+    <string name="search_widget_desc">氫 搜尋</string>
+    <string name="channel_read_aloud">朗讀</string>
+</resources>

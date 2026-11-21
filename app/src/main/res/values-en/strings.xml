@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Hydrogen</string>
+    <string name="app_name_full">Hydrogen (H browser)</string>
+    <string name="search_widget_hint">Search or type a URL</string>
+    <string name="search_widget_desc">Hydrogen Search</string>
+    <string name="channel_read_aloud">Read aloud</string>
+</resources>

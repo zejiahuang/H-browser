@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">氢</string>
+    <string name="app_name_full">氢 (H browser)</string>
+    <string name="search_widget_hint">搜索或输入网址</string>
+    <string name="search_widget_desc">氢 搜索</string>
+    <string name="channel_read_aloud">朗读</string>
+</resources>
