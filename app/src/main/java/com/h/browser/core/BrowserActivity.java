@@ -8,6 +8,7 @@ import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.content.res.ColorStateList;
 import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.drawable.Drawable;
@@ -515,6 +516,13 @@ public class BrowserActivity extends AppCompatActivity {
         button.setContentDescription(description);
         button.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
         button.setPadding(dp(10), dp(10), dp(10), dp(10));
+        if (Build.VERSION.SDK_INT >= 21) {
+            int normal = color(R.color.on_surface);
+            int disabled = (normal & 0x00FFFFFF) | 0x61000000;
+            button.setImageTintList(new ColorStateList(
+                    new int[][]{{-android.R.attr.state_enabled}, new int[]{}},
+                    new int[]{disabled, normal}));
+        }
         button.setOnClickListener(listener);
         return button;
     }
