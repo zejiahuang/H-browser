@@ -25,6 +25,10 @@ import com.h.browser.R;
 
 public final class Ui {
 
+    public interface Saver {
+        void save(String value);
+    }
+
     private Ui() {
     }
 

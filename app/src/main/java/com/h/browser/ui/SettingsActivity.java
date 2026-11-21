@@ -24,7 +24,6 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 import com.h.browser.R;
 import com.h.browser.adblock.AdBlock;
 import com.h.browser.ai.AiChatActivity;
-import com.h.browser.core.BrowserActivity;
 import com.h.browser.data.Backup;
 import com.h.browser.data.Prefs;
 import com.h.browser.theme.Monet;
@@ -437,9 +436,7 @@ public class SettingsActivity extends AppCompatActivity {
     }
 
     private void openSkins() {
-        Intent intent = new Intent(this, BrowserActivity.class);
-        intent.putExtra("url", "v://skins");
-        startActivity(intent);
+        startActivity(new Intent(this, SkinActivity.class));
     }
 
     private String toolbarSummary() {

@@ -5,9 +5,6 @@ import android.content.Context;
 import com.h.browser.adblock.AdBlock;
 import com.h.browser.core.UrlUtils;
 import com.h.browser.data.Db;
-import com.h.browser.data.Prefs;
-import com.h.browser.theme.Monet;
-import com.h.browser.theme.SkinStore;
 
 import java.text.SimpleDateFormat;
 import java.util.Date;
@@ -26,7 +23,7 @@ public final class InternalPages {
             + "h2{font-size:18px;margin:0 0 8px}.sub{color:var(--muted);font-size:13px;margin-bottom:16px}"
             + ".card{background:var(--card);border-radius:24px;padding:16px 18px;margin:12px 0}"
             + "a{color:var(--primary);text-decoration:none}"
-            + "input{width:100%;border:0;border-radius:22px;padding:15px 18px;font-size:16px;background:var(--bg);color:var(--fg);outline:none}"
+            + "input{width:100%;border:1px solid var(--outline);border-radius:22px;padding:15px 18px;font-size:16px;background:var(--card);color:var(--fg);outline:none;margin:4px 0 10px}"
             + "button{border:0;border-radius:20px;padding:12px 18px;background:var(--primary);color:#fff;font-size:15px;font-weight:600}"
             + "button.ghost{background:transparent;color:var(--muted);border:1px solid var(--outline)}"
             + ".row{display:flex;align-items:center;gap:10px;padding:12px 2px;border-bottom:1px solid var(--outline)}"
@@ -54,8 +51,6 @@ public final class InternalPages {
                 return wrap("历史", history(context));
             case "log":
                 return wrap("拦截日志", log());
-            case "skins":
-                return wrap("外观", skins(context));
             case "about":
                 return wrap("关于", about());
             case "home":
@@ -166,115 +161,6 @@ public final class InternalPages {
             sb.append("</div>");
         }
         return sb.toString();
-    }
-
-    private static String skins(Context context) {
-        StringBuilder sb = new StringBuilder();
-        sb.append("<style>")
-                .append(".skins{display:grid;grid-template-columns:repeat(auto-fill,minmax(148px,1fr));gap:10px}")
-                .append(".skin{background:var(--bg);border-radius:18px;padding:9px;display:flex;flex-direction:column;gap:7px}")
-                .append(".prev{height:76px;border-radius:12px;overflow:hidden;background:linear-gradient(135deg,#8FE9F0,#BDF0D9);display:flex;align-items:flex-end;padding:8px;color:#06343A;font-size:12px;font-weight:700}")
-                .append(".prev img{width:100%;height:100%;object-fit:cover;display:block}")
-                .append(".skin b{font-size:14px;display:block}.skin .by{font-size:11px;color:var(--muted)}")
-                .append(".badge{display:inline-block;background:var(--primary);color:#fff;border-radius:999px;padding:2px 8px;font-size:10px;margin-left:6px;vertical-align:2px}")
-                .append(".btnrow{display:flex;gap:6px;flex-wrap:wrap}")
-                .append(".btnrow button{font-size:12px;padding:8px 12px;border-radius:12px}")
-                .append("input{border:1px solid var(--outline)!important;background:var(--card)!important}")
-                .append("</style>");
-        int mode = Prefs.get().getInt("theme_mode", 0);
-        sb.append("<div class=card><h2>主题模式</h2><div class=sub>应用内界面明暗，不影响网页。</div>")
-                .append("<div class=btnrow>")
-                .append(modeButton("跟随系统", 0, mode == 0))
-                .append(modeButton("浅色", 1, mode == 1))
-                .append(modeButton("深色", 2, mode == 2))
-                .append("</div></div>");
-
-        sb.append("<div class=card><h2>主题色 · 莫奈</h2><div class=sub>当前：")
-                .append(Monet.summary())
-                .append("。Android 12+ 可用，低版本保持氢青。</div><div class=btnrow>")
-                .append(monetButton("跟随壁纸", 0, Prefs.monetSource() == 0))
-                .append(monetButton("从皮肤取色", 1, Prefs.monetSource() == 1))
-                .append(monetButton("自定义颜色", 2, Prefs.monetSource() == 2))
-                .append(monetButton("经典氢青", 3, Prefs.monetSource() == 3))
-                .append("</div><div style='display:flex;gap:8px;margin-top:10px'>")
-                .append("<input id=seed placeholder='#RRGGBB' style='flex:1' maxlength=7>")
-                .append("<button onclick=\"HNative.setMonetSeed(document.getElementById('seed').value)\">应用颜色</button>")
-                .append("</div></div>");
-
-        sb.append("<div class=card><h2>主页皮肤</h2><div class=sub>兼容 Via 的 HTML + CSS 主题包；支持 window.open 打开新标签。内置三套原创皮肤。</div><div class=skins>");
-        String active = Prefs.skinId();
-        List<SkinStore.Skin> list = SkinStore.list(context);
-        for (SkinStore.Skin skin : list) {
-            boolean current = skin.id.equals(active);
-            sb.append("<div class=skin><div class=prev style='background:linear-gradient(135deg,")
-                    .append(hex(skin.accent)).append(",").append(hex(skin.accent)).append("55)'>");
-            if (!SkinStore.CLASSIC.equals(skin.id)) {
-                sb.append("<img src='").append(SkinStore.fileUrl(skin.id, "preview.img"))
-                        .append("' onerror=\"this.style.display='none'\">");
-            } else {
-                sb.append("经典");
-            }
-            sb.append("</div><div><b>").append(UrlUtils.escapeHtml(skin.name));
-            if (current) {
-                sb.append("<span class=badge>使用中</span>");
-            }
-            sb.append("</b><span class=by>").append(UrlUtils.escapeHtml(skin.author)).append("</span></div>");
-            sb.append("<div class=btnrow>");
-            if (!current) {
-                sb.append("<button onclick=\"HNative.applySkin('").append(js(skin.id)).append("')\">应用</button>");
-            }
-            if (!skin.builtin) {
-                sb.append("<button class=ghost onclick=\"if(confirm('删除这套皮肤？'))HNative.deleteSkin('")
-                        .append(js(skin.id)).append("')\">删除</button>");
-            }
-            sb.append("</div></div>");
-        }
-        sb.append("</div></div>");
-
-        sb.append("<div class=card><h2>导入主题</h2><div class=sub>粘贴主题 JSON 地址（含 html/css 链接），或导入 .zip 主题包。</div>")
-                .append("<input id=skinurl placeholder='https://…/theme.json' style='margin-bottom:10px'>")
-                .append("<div class=btnrow><button onclick=\"HNative.installSkinUrl(document.getElementById('skinurl').value)\">从网址安装</button>")
-                .append("<button class=ghost onclick='HNative.pickSkinFile()'>从文件导入</button></div></div>");
-
-        sb.append("<div class=card><h2>发现主题</h2><div class=sub>读取社区索引（默认 BetterVia），主题文件由社区 CDN 提供，版权归原作者；仅按需下载，不随安装包分发。</div>")
-                .append("<input id=indexurl value='").append(UrlUtils.escapeHtml(Prefs.skinIndex()))
-                .append("' style='margin-bottom:10px'>")
-                .append("<div class=btnrow><button onclick=\"HNative.fetchSkinIndex(document.getElementById('indexurl').value)\">刷新列表</button></div>");
-        List<SkinStore.MarketEntry> market = SkinStore.market();
-        if (!market.isEmpty()) {
-            sb.append("<div class=skins style='margin-top:14px'>");
-            for (int i = 0; i < market.size(); i++) {
-                SkinStore.MarketEntry entry = market.get(i);
-                sb.append("<div class=skin><div class=prev>");
-                if (!entry.preview.isEmpty()) {
-                    sb.append("<img src='").append(UrlUtils.escapeHtml(entry.preview))
-                            .append("' onerror=\"this.style.display='none'\">");
-                }
-                sb.append("</div><div><b>").append(UrlUtils.escapeHtml(entry.name))
-                        .append("</b><span class=by>").append(UrlUtils.escapeHtml(entry.author))
-                        .append("</span></div><div class=btnrow><button onclick='HNative.installMarketSkin(")
-                        .append(i).append(")'>安装</button></div></div>");
-            }
-            sb.append("</div>");
-        } else {
-            sb.append("<div class=sub style='margin-top:12px'>点「刷新列表」获取社区主题。</div>");
-        }
-        sb.append("</div>");
-        return sb.toString();
-    }
-
-    private static String modeButton(String label, int mode, boolean on) {
-        return "<button class='" + (on ? "" : "ghost") + "' onclick='HNative.setThemeMode("
-                + mode + ")'>" + label + "</button>";
-    }
-
-    private static String monetButton(String label, int source, boolean on) {
-        return "<button class='" + (on ? "" : "ghost") + "' onclick='HNative.setMonetSource("
-                + source + ")'>" + label + "</button>";
-    }
-
-    private static String hex(int color) {
-        return String.format("#%06X", color & 0xFFFFFF);
     }
 
     private static String about() {

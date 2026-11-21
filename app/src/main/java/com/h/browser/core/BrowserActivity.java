@@ -79,6 +79,7 @@ import com.h.browser.tts.ReadAloudService;
 import com.h.browser.ui.InternalPages;
 import com.h.browser.ui.NativeBridge;
 import com.h.browser.ui.SettingsActivity;
+import com.h.browser.ui.SkinActivity;
 import com.h.browser.userscript.GmBridge;
 import com.h.browser.userscript.UserScripts;
 import com.h.browser.vault.VaultActivity;
@@ -140,6 +141,7 @@ public class BrowserActivity extends AppCompatActivity {
     private int nextTabId = 1;
     private boolean settingAddress;
     private boolean restoredState;
+    private String skinId;
     private ValueCallback<Uri> legacyFileCallback;
     private ArrayAdapter<String> suggestions;
 
@@ -163,6 +165,7 @@ public class BrowserActivity extends AppCompatActivity {
         applySystemBars();
         AdBlock.init(this);
         UserScripts.init(this);
+        skinId = Prefs.skinId();
         buildUi();
         if (savedInstanceState != null) {
             restoreState(savedInstanceState);
@@ -756,6 +759,9 @@ public class BrowserActivity extends AppCompatActivity {
             case "settings":
                 openSettings();
                 return;
+            case "skins":
+                startActivity(new Intent(this, SkinActivity.class));
+                return;
             case "downloader":
             case "downloads":
                 openDownloads();
@@ -783,6 +789,7 @@ public class BrowserActivity extends AppCompatActivity {
             String html = SkinStore.inlineHtml(this);
             if (skin != null && html != null) {
                 tab.url = url;
+                tab.title = "";
                 tab.web.loadDataWithBaseURL(SkinStore.pageUrl(skin.id), html,
                         "text/html", "utf-8", null);
                 progress.setVisibility(View.GONE);
@@ -791,6 +798,7 @@ public class BrowserActivity extends AppCompatActivity {
             }
         }
         tab.url = url;
+        tab.title = "";
         tab.web.loadDataWithBaseURL(url, InternalPages.render(this, url), "text/html", "utf-8", null);
         progress.setVisibility(View.GONE);
         updateAddress();
@@ -994,7 +1002,7 @@ public class BrowserActivity extends AppCompatActivity {
         actions.add(new MenuAction(R.drawable.ic_moon, "夜间", this::toggleNightMode));
         actions.add(new MenuAction(R.drawable.ic_desktop, "电脑版", this::toggleDesktopMode));
         actions.add(new MenuAction(R.drawable.ic_palette, "外观",
-                () -> openUrl("v://skins", false)));
+                () -> startActivity(new Intent(this, SkinActivity.class))));
         actions.add(new MenuAction(R.drawable.ic_settings, "设置", this::openSettings));
         menuGrid(sheet, dialog, actions);
 
@@ -1667,6 +1675,14 @@ public class BrowserActivity extends AppCompatActivity {
         if (refreshLayout != null) {
             refreshLayout.setEnabled(Prefs.pullRefresh());
         }
+        if (!Prefs.skinId().equals(skinId)) {
+            skinId = Prefs.skinId();
+            for (Tab tab : tabs) {
+                if ("v://home".equals(tab.url) || SkinStore.isSkinUrl(tab.url)) {
+                    handleInternal(tab, "v://home");
+                }
+            }
+        }
         updateUi();
     }
 
@@ -1836,7 +1852,9 @@ public class BrowserActivity extends AppCompatActivity {
             if (tab == null) {
                 return;
             }
-            tab.url = url;
+            if (!"about:blank".equals(url)) {
+                tab.url = url;
+            }
             if (tab == currentTab()) {
                 progress.setProgress(0);
                 progress.setVisibility(View.VISIBLE);
@@ -1850,15 +1868,17 @@ public class BrowserActivity extends AppCompatActivity {
             if (tab == null) {
                 return;
             }
-            tab.url = url;
+            if (!"about:blank".equals(url)) {
+                tab.url = url;
+            }
             String title = view.getTitle();
-            if (title != null) {
+            if (title != null && !"about:blank".equals(title)) {
                 tab.title = title;
             }
-            if (!UrlUtils.isInternal(url) && !SkinStore.isSkinUrl(url) && !tab.incognito) {
+            if (!UrlUtils.isInternal(tab.url) && !SkinStore.isSkinUrl(tab.url) && !tab.incognito) {
                 Db.get(BrowserActivity.this).addHistory(title, url);
             }
-            boolean home = UrlUtils.isInternal(url) || SkinStore.isSkinUrl(url);
+            boolean home = UrlUtils.isInternal(tab.url) || SkinStore.isSkinUrl(tab.url);
             if (!home) {
                 injectCosmetic(view, url);
                 UserScripts.inject(view, url);
@@ -1977,7 +1997,7 @@ public class BrowserActivity extends AppCompatActivity {
         @Override
         public void onReceivedTitle(WebView view, String title) {
             Tab tab = tabFor(view);
-            if (tab != null && title != null) {
+            if (tab != null && title != null && !"about:blank".equals(title)) {
                 tab.title = title;
                 if (tab == currentTab()) {
                     updateAddress();

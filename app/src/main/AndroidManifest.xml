@@ -74,6 +74,10 @@
             android:exported="false" />
 
         <activity
+            android:name=".ui.SkinActivity"
+            android:exported="false" />
+
+        <activity
             android:name=".ai.AiChatActivity"
             android:exported="false"
             android:windowSoftInputMode="adjustResize" />
