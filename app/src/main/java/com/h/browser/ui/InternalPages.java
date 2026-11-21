@@ -72,7 +72,9 @@ public final class InternalPages {
 
     private static String home(Context context) {
         StringBuilder sb = new StringBuilder();
-        sb.append("<div class=wrap><h1>氢</h1><div class=sub>轻量 · 干净 · 属于你</div>");
+        sb.append("<div class=wrap><div style='text-align:center;padding:18px 0 10px'>"
+                + "<h1 style='font-size:40px;margin:0'>氢</h1>"
+                + "<div class=sub style='margin:6px 0 0'>轻量 · 干净 · 属于你</div></div>");
         sb.append("<form onsubmit='event.preventDefault();HNative.search(this.q.value);return false'>");
         sb.append("<input name=q placeholder='搜索或输入网址' autocomplete=off autocapitalize=off spellcheck=false></form>");
         List<Db.Item> marks = Db.get(context).bookmarks(8);

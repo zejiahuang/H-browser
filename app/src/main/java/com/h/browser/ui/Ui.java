@@ -111,27 +111,46 @@ public final class Ui {
         return view;
     }
 
+    public static LinearLayout card(Context context) {
+        LinearLayout card = column(context);
+        android.graphics.drawable.GradientDrawable bg =
+                new android.graphics.drawable.GradientDrawable();
+        bg.setColor(color(context, R.color.surface_container));
+        bg.setCornerRadius(dp(context, 20));
+        card.setBackground(bg);
+        if (Build.VERSION.SDK_INT >= 21) {
+            card.setClipToOutline(true);
+        }
+        return card;
+    }
+
     public static TextView section(Context context, String label) {
         TextView view = text(context, label, 13, R.color.primary);
-        view.setPadding(dp(context, 16), dp(context, 18), dp(context, 16), dp(context, 6));
+        view.setLetterSpacing(0.02f);
+        view.setPadding(dp(context, 26), dp(context, 20), dp(context, 26), dp(context, 8));
         return view;
     }
 
     public static LinearLayout item(Context context, String title, String summary, Runnable action) {
         LinearLayout row = row(context);
         row.setBackground(ripple(context));
-        row.setPadding(dp(context, 16), dp(context, 12), dp(context, 16), dp(context, 12));
-        row.setMinimumHeight(dp(context, 56));
+        row.setPadding(dp(context, 18), dp(context, 13), dp(context, 14), dp(context, 13));
+        row.setMinimumHeight(dp(context, 58));
         LinearLayout texts = column(context);
-        TextView name = text(context, title, 16, R.color.on_surface);
+        TextView name = text(context, title, 15, R.color.on_surface);
         texts.addView(name);
         if (summary != null) {
             TextView sub = text(context, summary, 13, R.color.on_surface_variant);
+            sub.setSingleLine(true);
+            sub.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
             texts.addView(sub);
         }
         row.addView(texts, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         if (action != null) {
+            TextView chevron = text(context, "›", 20, R.color.on_surface_variant);
+            chevron.setPadding(dp(context, 6), 0, 0, 0);
+            row.addView(chevron);
             row.setOnClickListener(v -> action.run());
         }
         return row;

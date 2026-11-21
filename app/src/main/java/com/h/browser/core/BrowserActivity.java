@@ -47,6 +47,7 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.appcompat.app.AppCompatDelegate;
 import androidx.core.content.ContextCompat;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowCompat;
@@ -57,7 +58,6 @@ import androidx.webkit.WebSettingsCompat;
 import androidx.webkit.WebViewAssetLoader;
 
 import com.google.android.material.bottomsheet.BottomSheetDialog;
-import com.google.android.material.card.MaterialCardView;
 import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 import com.google.android.material.snackbar.Snackbar;
 import com.h.browser.R;
@@ -114,12 +114,16 @@ public class BrowserActivity extends AppCompatActivity {
 
     private LinearLayout root;
     private FrameLayout webContainer;
+    private FrameLayout pageHost;
     private SwipeRefreshLayout refreshLayout;
     private AutoCompleteTextView address;
+    private TextView titleView;
+    private boolean editingAddress;
     private ImageButton clearButton;
     private ProgressBar progress;
     private ImageButton backButton;
     private ImageButton forwardButton;
+    private TextView tabCount;
     private LinearLayout toolbar;
     private String toolbarPref;
     private LinearLayout findBar;
@@ -206,24 +210,30 @@ public class BrowserActivity extends AppCompatActivity {
         });
         setContentView(root);
 
-        MaterialCardView bar = new MaterialCardView(this);
-        bar.setCardBackgroundColor(color(R.color.surface_container));
-        bar.setRadius(dp(28));
-        bar.setCardElevation(0);
-        bar.setStrokeWidth(0);
-        LinearLayout.LayoutParams barParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(56));
-        barParams.setMargins(dp(8), dp(6), dp(8), 0);
-        bar.setLayoutParams(barParams);
-        LinearLayout barRow = new LinearLayout(this);
-        barRow.setOrientation(LinearLayout.HORIZONTAL);
-        barRow.setGravity(Gravity.CENTER_VERTICAL);
-        barRow.setPadding(dp(6), 0, dp(4), 0);
+        LinearLayout bar = new LinearLayout(this);
+        bar.setOrientation(LinearLayout.HORIZONTAL);
+        bar.setGravity(Gravity.CENTER_VERTICAL);
+        bar.setBackgroundColor(color(R.color.surface));
+        bar.setPadding(dp(4), dp(2), dp(4), dp(2));
+
+        bar.addView(toolButton(R.drawable.ic_search, "搜索或输入网址", v -> beginEdit()),
+                new LinearLayout.LayoutParams(dp(44), dp(44)));
+
+        FrameLayout titleHost = new FrameLayout(this);
+        titleView = new TextView(this);
+        titleView.setTextSize(16);
+        titleView.setTextColor(color(R.color.on_surface));
+        titleView.setSingleLine(true);
+        titleView.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        titleView.setGravity(Gravity.CENTER);
+        titleView.setText("主页");
+        titleView.setBackground(selectableBackground());
+        titleView.setPadding(dp(8), 0, dp(8), 0);
+        titleView.setOnClickListener(v -> beginEdit());
+        titleHost.addView(titleView, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(44), Gravity.CENTER));
 
         address = new AutoCompleteTextView(this);
-        LinearLayout.LayoutParams addressParams = new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.MATCH_PARENT, 1f);
-        address.setLayoutParams(addressParams);
         address.setBackground(null);
         address.setHint("搜索或输入网址");
         address.setTextSize(16);
@@ -232,9 +242,12 @@ public class BrowserActivity extends AppCompatActivity {
         address.setInputType(android.text.InputType.TYPE_CLASS_TEXT
                 | android.text.InputType.TYPE_TEXT_VARIATION_URI);
         address.setImeOptions(EditorInfo.IME_ACTION_GO);
-        address.setPadding(dp(14), 0, dp(4), 0);
+        address.setPadding(dp(6), 0, dp(4), 0);
         address.setTextColor(color(R.color.on_surface));
         address.setHintTextColor(color(R.color.on_surface_variant));
+        address.setVisibility(View.GONE);
+        titleHost.addView(address, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(44), Gravity.CENTER));
         suggestions = new ArrayAdapter<>(this, android.R.layout.simple_dropdown_item_1line,
                 new ArrayList<>());
         address.setAdapter(suggestions);
@@ -249,11 +262,11 @@ public class BrowserActivity extends AppCompatActivity {
             return false;
         });
         address.setOnFocusChangeListener((v, hasFocus) -> {
-            updateClearButton();
             if (hasFocus) {
                 address.selectAll();
-            } else {
-                updateAddress();
+                updateClearButton();
+            } else if (editingAddress) {
+                endEdit();
             }
         });
         address.setOnItemClickListener((parent, view, position, id) -> {
@@ -289,7 +302,7 @@ public class BrowserActivity extends AppCompatActivity {
                 }
             }
         });
-        barRow.addView(address);
+        bar.addView(titleHost, new LinearLayout.LayoutParams(0, dp(44), 1f));
 
         clearButton = toolButton(R.drawable.ic_close, "清除地址", v -> {
             address.setText("");
@@ -297,12 +310,12 @@ public class BrowserActivity extends AppCompatActivity {
             showKeyboard();
         });
         clearButton.setVisibility(View.GONE);
-        barRow.addView(clearButton, new LinearLayout.LayoutParams(dp(36), dp(36)));
+        bar.addView(clearButton, new LinearLayout.LayoutParams(dp(40), dp(40)));
 
         ImageButton reload = toolButton(R.drawable.ic_refresh, "刷新", v -> reloadOrStop());
-        barRow.addView(reload, new LinearLayout.LayoutParams(dp(40), dp(40)));
-        bar.addView(barRow);
-        root.addView(bar);
+        bar.addView(reload, new LinearLayout.LayoutParams(dp(44), dp(44)));
+        root.addView(bar, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(52)));
 
         progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         progress.setMax(100);
@@ -330,6 +343,9 @@ public class BrowserActivity extends AppCompatActivity {
                 refreshLayout.setRefreshing(false);
             }
         });
+        pageHost = new FrameLayout(this);
+        refreshLayout.addView(pageHost, new SwipeRefreshLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         webContainer.addView(refreshLayout, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         root.addView(webContainer, new LinearLayout.LayoutParams(
@@ -374,10 +390,25 @@ public class BrowserActivity extends AppCompatActivity {
                     toolbar.addView(toolButton(R.drawable.ic_refresh, "刷新",
                             v -> reloadOrStop()), weightParams());
                     break;
-                case "tabs":
-                    toolbar.addView(toolButton(R.drawable.ic_tabs, "标签页",
-                            v -> showTabs()), weightParams());
+                case "tabs": {
+                    FrameLayout holder = new FrameLayout(this);
+                    holder.setLayoutParams(weightParams());
+                    ImageButton tabsButton = toolButton(R.drawable.ic_tabs_count, "标签页",
+                            v -> showTabs());
+                    holder.addView(tabsButton, new FrameLayout.LayoutParams(
+                            dp(44), dp(44), Gravity.CENTER));
+                    tabCount = new TextView(this);
+                    tabCount.setTextSize(11);
+                    tabCount.setGravity(Gravity.CENTER);
+                    tabCount.setTextColor(color(R.color.on_surface));
+                    tabCount.setIncludeFontPadding(false);
+                    tabCount.setSingleLine(true);
+                    holder.addView(tabCount, new FrameLayout.LayoutParams(
+                            dp(24), dp(24), Gravity.CENTER));
+                    toolbar.addView(holder);
+                    updateTabCount();
                     break;
+                }
                 case "newtab":
                     toolbar.addView(toolButton(R.drawable.ic_add, "新建标签",
                             v -> newTab(Prefs.homepage(), false)), weightParams());
@@ -634,17 +665,19 @@ public class BrowserActivity extends AppCompatActivity {
         }
         if (current >= 0 && current < tabs.size()) {
             WebView old = tabs.get(current).web;
-            if (old.getParent() != null) {
-                webContainer.removeView(old);
+            if (old.getParent() instanceof ViewGroup) {
+                ((ViewGroup) old.getParent()).removeView(old);
             }
             old.onPause();
         }
         current = index;
         Tab tab = tabs.get(index);
-        if (tab.web.getParent() != null) {
+        if (tab.web.getParent() instanceof ViewGroup) {
             ((ViewGroup) tab.web.getParent()).removeView(tab.web);
         }
-        refreshLayout.addView(tab.web);
+        pageHost.removeAllViews();
+        pageHost.addView(tab.web, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         tab.web.onResume();
         progress.setVisibility(View.GONE);
         updateUi();
@@ -832,7 +865,18 @@ public class BrowserActivity extends AppCompatActivity {
 
     private void updateAddress() {
         Tab tab = currentTab();
-        if (tab == null || address.hasFocus()) {
+        if (tab == null) {
+            return;
+        }
+        if (titleView != null) {
+            String title = tab.title;
+            if (title == null || title.isEmpty() || title.equals(tab.url)) {
+                title = UrlUtils.isInternal(tab.url) || SkinStore.isSkinUrl(tab.url)
+                        ? "主页" : tab.url;
+            }
+            titleView.setText(title);
+        }
+        if (editingAddress || address.hasFocus()) {
             updateClearButton();
             return;
         }
@@ -845,11 +889,17 @@ public class BrowserActivity extends AppCompatActivity {
         updateClearButton();
     }
 
+    private void updateTabCount() {
+        if (tabCount != null) {
+            tabCount.setText(String.valueOf(Math.max(1, tabs.size())));
+        }
+    }
+
     private void updateClearButton() {
         if (clearButton == null) {
             return;
         }
-        boolean show = address.hasFocus() && address.getText().length() > 0;
+        boolean show = editingAddress && address.getText().length() > 0;
         clearButton.setVisibility(show ? View.VISIBLE : View.GONE);
     }
 
@@ -868,6 +918,7 @@ public class BrowserActivity extends AppCompatActivity {
             forwardButton.setEnabled(canForward);
             forwardButton.setAlpha(canForward ? 1f : 0.38f);
         }
+        updateTabCount();
         updateAddress();
     }
 
@@ -901,24 +952,140 @@ public class BrowserActivity extends AppCompatActivity {
 
     private void showMenu() {
         final BottomSheetDialog dialog = newSheet();
-        LinearLayout list = listOf(dialog);
-        item(list, dialog, R.drawable.ic_add, "新建标签", () -> newTab(Prefs.homepage(), false));
-        item(list, dialog, R.drawable.ic_tabs, "新建无痕标签", () -> newTab(Prefs.homepage(), true));
-        item(list, dialog, R.drawable.ic_star, "收藏 / 取消收藏", this::toggleBookmark);
-        item(list, dialog, R.drawable.ic_history, "历史记录", () -> openUrl("v://history", false));
-        item(list, dialog, R.drawable.ic_download, "下载管理", this::openDownloads);
-        item(list, dialog, R.drawable.ic_share, "分享页面", this::sharePage);
-        item(list, dialog, R.drawable.ic_search, "页内查找", this::showFindBar);
-        item(list, dialog, R.drawable.ic_edit, "网页缩放", this::showZoomDialog);
-        item(list, dialog, R.drawable.ic_reader, "阅读模式", this::openReader);
-        item(list, dialog, R.drawable.ic_tts, "朗读", this::readAloud);
-        item(list, dialog, R.drawable.ic_translate, "翻译", this::translateSelection);
-        item(list, dialog, R.drawable.ic_ai, "问 AI", this::askAi);
-        item(list, dialog, R.drawable.ic_lock, "填充密码", this::fillPassword);
-        item(list, dialog, R.drawable.ic_scan, "扫描二维码", this::startScan);
-        item(list, dialog, R.drawable.ic_star, "外观与皮肤", () -> openUrl("v://skins", false));
-        item(list, dialog, R.drawable.ic_settings, "设置", this::openSettings);
+        LinearLayout sheet = new LinearLayout(this);
+        sheet.setOrientation(LinearLayout.VERTICAL);
+        android.graphics.drawable.GradientDrawable sheetBg =
+                new android.graphics.drawable.GradientDrawable();
+        sheetBg.setColor(color(R.color.surface_container));
+        float radius = dp(24);
+        sheetBg.setCornerRadii(new float[]{radius, radius, radius, radius, 0, 0, 0, 0});
+        sheet.setBackground(sheetBg);
+        sheet.setPadding(dp(8), dp(12), dp(8), dp(20));
+
+        View handle = new View(this);
+        android.graphics.drawable.GradientDrawable handleBg =
+                new android.graphics.drawable.GradientDrawable();
+        handleBg.setColor(color(R.color.outline_variant));
+        handleBg.setCornerRadius(dp(2));
+        handle.setBackground(handleBg);
+        LinearLayout.LayoutParams handleParams = new LinearLayout.LayoutParams(dp(32), dp(4));
+        handleParams.gravity = Gravity.CENTER_HORIZONTAL;
+        handleParams.bottomMargin = dp(10);
+        sheet.addView(handle, handleParams);
+
+        List<MenuAction> actions = new ArrayList<>();
+        actions.add(new MenuAction(R.drawable.ic_add, "新建标签",
+                () -> newTab(Prefs.homepage(), false)));
+        actions.add(new MenuAction(R.drawable.ic_visibility_off, "无痕标签",
+                () -> newTab(Prefs.homepage(), true)));
+        actions.add(new MenuAction(R.drawable.ic_star, "收藏", this::toggleBookmark));
+        actions.add(new MenuAction(R.drawable.ic_history, "历史",
+                () -> openUrl("v://history", false)));
+        actions.add(new MenuAction(R.drawable.ic_download, "下载", this::openDownloads));
+        actions.add(new MenuAction(R.drawable.ic_share, "分享", this::sharePage));
+        actions.add(new MenuAction(R.drawable.ic_search, "查找", this::showFindBar));
+        actions.add(new MenuAction(R.drawable.ic_edit, "缩放", this::showZoomDialog));
+        actions.add(new MenuAction(R.drawable.ic_reader, "阅读", this::openReader));
+        actions.add(new MenuAction(R.drawable.ic_tts, "朗读", this::readAloud));
+        actions.add(new MenuAction(R.drawable.ic_translate, "翻译", this::translateSelection));
+        actions.add(new MenuAction(R.drawable.ic_ai, "问 AI", this::askAi));
+        actions.add(new MenuAction(R.drawable.ic_scan, "扫码", this::startScan));
+        actions.add(new MenuAction(R.drawable.ic_lock, "密码", this::fillPassword));
+        actions.add(new MenuAction(R.drawable.ic_moon, "夜间", this::toggleNightMode));
+        actions.add(new MenuAction(R.drawable.ic_desktop, "电脑版", this::toggleDesktopMode));
+        actions.add(new MenuAction(R.drawable.ic_palette, "外观",
+                () -> openUrl("v://skins", false)));
+        actions.add(new MenuAction(R.drawable.ic_settings, "设置", this::openSettings));
+        menuGrid(sheet, dialog, actions);
+
+        dialog.setContentView(sheet);
+        dialog.setOnShowListener(d -> {
+            View sheetView = dialog.findViewById(
+                    com.google.android.material.R.id.design_bottom_sheet);
+            if (sheetView != null) {
+                sheetView.setBackgroundColor(android.graphics.Color.TRANSPARENT);
+            }
+        });
         dialog.show();
+    }
+
+    private static final class MenuAction {
+        final int icon;
+        final String label;
+        final Runnable task;
+
+        MenuAction(int icon, String label, Runnable task) {
+            this.icon = icon;
+            this.label = label;
+            this.task = task;
+        }
+    }
+
+    private void menuGrid(LinearLayout parent, final BottomSheetDialog dialog,
+                          List<MenuAction> actions) {
+        LinearLayout row = null;
+        for (int i = 0; i < actions.size(); i++) {
+            if (i % 5 == 0) {
+                row = new LinearLayout(this);
+                row.setOrientation(LinearLayout.HORIZONTAL);
+                parent.addView(row, new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            }
+            row.addView(menuCell(dialog, actions.get(i)),
+                    new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        }
+    }
+
+    private View menuCell(final BottomSheetDialog dialog, final MenuAction action) {
+        LinearLayout cell = new LinearLayout(this);
+        cell.setOrientation(LinearLayout.VERTICAL);
+        cell.setGravity(Gravity.CENTER_HORIZONTAL);
+        cell.setBackground(selectableBackground());
+        cell.setPadding(dp(2), dp(12), dp(2), dp(10));
+        ImageView image = new androidx.appcompat.widget.AppCompatImageView(this);
+        image.setImageResource(action.icon);
+        image.setColorFilter(color(R.color.on_surface));
+        cell.addView(image, new LinearLayout.LayoutParams(dp(24), dp(24)));
+        TextView label = new TextView(this);
+        label.setText(action.label);
+        label.setTextSize(11);
+        label.setTextColor(color(R.color.on_surface));
+        label.setGravity(Gravity.CENTER);
+        label.setSingleLine(true);
+        label.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        LinearLayout.LayoutParams labelParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        labelParams.topMargin = dp(6);
+        cell.addView(label, labelParams);
+        cell.setOnClickListener(v -> {
+            dialog.dismiss();
+            action.task.run();
+        });
+        return cell;
+    }
+
+    private void toggleNightMode() {
+        boolean night = (getResources().getConfiguration().uiMode
+                & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
+        Prefs.get().edit().putInt("theme_mode", night ? 1 : 2).apply();
+        AppCompatDelegate.setDefaultNightMode(night
+                ? AppCompatDelegate.MODE_NIGHT_NO : AppCompatDelegate.MODE_NIGHT_YES);
+    }
+
+    private void toggleDesktopMode() {
+        boolean desktop = Prefs.uaMode() != 1;
+        Prefs.setUaMode(desktop ? 1 : 0);
+        WebView web = currentWeb();
+        if (web != null) {
+            if (desktop) {
+                web.getSettings().setUserAgentString("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        + "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36 H/0.1");
+            } else {
+                web.getSettings().setUserAgentString(null);
+            }
+            web.reload();
+        }
+        toast(desktop ? "已切换电脑版" : "已切换移动版");
     }
 
     private BottomSheetDialog newSheet() {
@@ -1360,9 +1527,33 @@ public class BrowserActivity extends AppCompatActivity {
     }
 
     private void focusAddress() {
+        beginEdit();
+    }
+
+    private void beginEdit() {
+        if (address == null) {
+            return;
+        }
+        editingAddress = true;
+        titleView.setVisibility(View.GONE);
+        address.setVisibility(View.VISIBLE);
+        Tab tab = currentTab();
+        String url = tab == null ? "" : tab.url;
+        boolean home = tab == null || UrlUtils.isInternal(url) || SkinStore.isSkinUrl(url);
+        settingAddress = true;
+        address.setText(home ? "" : url);
+        address.setSelection(address.getText().length());
+        settingAddress = false;
         address.requestFocus();
-        address.selectAll();
         showKeyboard();
+        updateClearButton();
+    }
+
+    private void endEdit() {
+        editingAddress = false;
+        address.setVisibility(View.GONE);
+        titleView.setVisibility(View.VISIBLE);
+        updateAddress();
     }
 
     private void showKeyboard() {
@@ -1788,6 +1979,9 @@ public class BrowserActivity extends AppCompatActivity {
             Tab tab = tabFor(view);
             if (tab != null && title != null) {
                 tab.title = title;
+                if (tab == currentTab()) {
+                    updateAddress();
+                }
             }
         }
 

@@ -1,10 +1,12 @@
 package com.h.browser.theme;
 
 import android.content.Context;
+import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.net.Uri;
+import android.provider.OpenableColumns;
 
 import com.h.browser.adblock.AdBlock;
 import com.h.browser.data.Prefs;
@@ -202,6 +204,9 @@ public final class SkinStore {
         String shim = "<meta name=viewport content='width=device-width,initial-scale=1,viewport-fit=cover'>"
                 + "<script>window.open=function(u){try{HNative.newTab(u)}catch(e){};return null};"
                 + "window.close=function(){};</script>";
+        if (html.toLowerCase(Locale.US).indexOf("<title") < 0) {
+            shim += "<title>" + UrlUtils.escapeHtml(skin.name) + "</title>";
+        }
         StringBuilder head = new StringBuilder(shim);
         if (!css.isEmpty()) {
             head.append("<style>").append(css).append("</style>");
@@ -299,14 +304,18 @@ public final class SkinStore {
 
     public static void installZip(final Context context, final Uri uri, final Callback cb) {
         new Thread(() -> {
+            File dir = null;
             try {
                 ensure(context);
-                String zipName = uri.getLastPathSegment();
-                String id = slug(zipName == null ? "skin" : zipName.replaceAll("\\.zip$", ""));
-                File dir = new File(root(context), id);
+                String label = displayName(context, uri).replaceAll("(?i)\\.zip$", "").trim();
+                if (label.isEmpty()) {
+                    label = "skin";
+                }
+                String id = slug(label);
+                dir = new File(root(context), id);
                 int suffix = 2;
                 while (dir.exists()) {
-                    id = slug(zipName == null ? "skin" : zipName.replaceAll("\\.zip$", "")) + "-" + suffix++;
+                    id = slug(label) + "-" + suffix++;
                     dir = new File(root(context), id);
                 }
                 dir.mkdirs();
@@ -319,7 +328,8 @@ public final class SkinStore {
                 long total = 0;
                 while ((item = zip.getNextEntry()) != null) {
                     String entryName = item.getName().replace('\\', '/');
-                    if (item.isDirectory() || entryName.startsWith("/") || entryName.contains("..")) {
+                    if (item.isDirectory() || entryName.startsWith("/") || entryName.contains("..")
+                            || entryName.startsWith("__MACOSX/")) {
                         continue;
                     }
                     byte[] data = readAll(zip, 6 * 1024 * 1024);
@@ -328,7 +338,7 @@ public final class SkinStore {
                         throw new java.io.IOException("主题包过大");
                     }
                     File out = new File(dir, entryName);
-                    if (!out.getCanonicalPath().startsWith(dir.getCanonicalPath())) {
+                    if (!out.getCanonicalPath().startsWith(dir.getCanonicalPath() + File.separator)) {
                         continue;
                     }
                     File parent = out.getParentFile();
@@ -338,38 +348,176 @@ public final class SkinStore {
                     writeFile(out, data);
                 }
                 zip.close();
-                String htmlName = pickFile(dir, ".html");
-                String cssName = pickFile(dir, ".css");
-                if (htmlName == null) {
+
+                File html = findSkinFile(dir, ".html", 4);
+                if (html == null) {
                     throw new java.io.IOException("压缩包内没有 HTML");
                 }
-                if (!"index.html".equals(htmlName)) {
-                    new File(dir, htmlName).renameTo(new File(dir, "index.html"));
+                hoist(html.getParentFile(), dir);
+                html = findSkinFile(dir, ".html", 1);
+                File css = referencedCss(html, dir);
+                if (css == null) {
+                    css = findSkinFile(dir, ".css", 2);
                 }
-                if (cssName != null && !"style.css".equals(cssName)) {
-                    new File(dir, cssName).renameTo(new File(dir, "style.css"));
+                File targetHtml = new File(dir, "index.html");
+                if (!html.equals(targetHtml)) {
+                    if (targetHtml.exists()) {
+                        targetHtml.delete();
+                    }
+                    if (!html.renameTo(targetHtml)) {
+                        writeFile(targetHtml, readFile(html));
+                        html.delete();
+                    }
+                    html = targetHtml;
                 }
+                File targetCss = new File(dir, "style.css");
+                if (css != null && !css.equals(targetCss)) {
+                    if (targetCss.exists()) {
+                        targetCss.delete();
+                    }
+                    if (!css.renameTo(targetCss)) {
+                        writeFile(targetCss, readFile(css));
+                        css.delete();
+                    }
+                }
+
                 File manifestFile = new File(dir, "skin.json");
-                String name = zipName == null ? id : zipName.replaceAll("\\.zip$", "");
+                String name = label;
                 String author = "本地导入";
+                String version = "1.0";
+                String accent = "#00B8C4";
                 if (manifestFile.exists()) {
-                    JSONObject manifest = new JSONObject(readFile(manifestFile));
-                    name = manifest.optString("name", name);
-                    author = manifest.optString("author", author);
+                    JSONObject existing = new JSONObject(readFile(manifestFile));
+                    name = existing.optString("name", name);
+                    author = existing.optString("author", author);
+                    version = existing.optString("version", version);
+                    accent = existing.optString("accent", accent);
                 }
                 JSONObject manifest = new JSONObject();
                 manifest.put("id", id);
                 manifest.put("name", name);
                 manifest.put("author", author);
-                manifest.put("version", "1.0");
-                manifest.put("accent", "#00B8C4");
+                manifest.put("version", version);
+                manifest.put("accent", accent);
                 writeFile(manifestFile, manifest.toString(2));
                 Prefs.setSkinId(id);
                 post(cb, true, "已导入并应用：" + name);
             } catch (Throwable t) {
+                if (dir != null) {
+                    deleteTree(dir);
+                }
                 post(cb, false, "导入失败：" + shortError(t));
             }
         }, "skin-zip").start();
+    }
+
+    /** 压缩包常见的「一级子目录 + index.html」结构：把 HTML 所在目录的内容提到根。 */
+    private static void hoist(File src, File dst) {
+        if (src == null || !src.isDirectory() || src.equals(dst)) {
+            return;
+        }
+        File[] files = src.listFiles();
+        if (files == null) {
+            return;
+        }
+        for (File file : files) {
+            File target = new File(dst, file.getName());
+            if (file.isDirectory()) {
+                if (target.isDirectory()) {
+                    hoist(file, target);
+                    deleteTree(file);
+                } else {
+                    if (target.exists()) {
+                        target.delete();
+                    }
+                    if (!file.renameTo(target)) {
+                        deleteTree(file);
+                    }
+                }
+            } else if (!target.exists()) {
+                file.renameTo(target);
+            }
+        }
+        String[] rest = src.list();
+        if (rest != null && rest.length == 0) {
+            src.delete();
+        }
+    }
+
+    private static File findSkinFile(File dir, String suffix, int depth) {
+        if (dir == null || depth < 0) {
+            return null;
+        }
+        File[] files = dir.listFiles();
+        if (files == null) {
+            return null;
+        }
+        File fallback = null;
+        for (File file : files) {
+            if (file.isFile() && file.getName().toLowerCase(Locale.US).endsWith(suffix)) {
+                if (file.getName().equalsIgnoreCase("index.html")) {
+                    return file;
+                }
+                if (fallback == null) {
+                    fallback = file;
+                }
+            }
+        }
+        for (File file : files) {
+            if (file.isDirectory()) {
+                File hit = findSkinFile(file, suffix, depth - 1);
+                if (hit != null) {
+                    return hit;
+                }
+            }
+        }
+        return fallback;
+    }
+
+    private static File referencedCss(File html, File root) {
+        try {
+            Matcher matcher = HTML_ATTR.matcher(readFile(html));
+            while (matcher.find()) {
+                String value = matcher.group(3);
+                if (!value.toLowerCase(Locale.US).endsWith(".css")) {
+                    continue;
+                }
+                if (value.startsWith("http") || value.startsWith("//") || value.startsWith("/")) {
+                    continue;
+                }
+                File resolved = new File(html.getParentFile(), value);
+                if (resolved.isFile()) {
+                    return resolved;
+                }
+                File rootLevel = new File(root, value);
+                if (rootLevel.isFile()) {
+                    return rootLevel;
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
+    private static String displayName(Context context, Uri uri) {
+        Cursor cursor = null;
+        try {
+            cursor = context.getContentResolver().query(uri,
+                    new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null);
+            if (cursor != null && cursor.moveToFirst()) {
+                String name = cursor.getString(0);
+                if (name != null && !name.trim().isEmpty()) {
+                    return name;
+                }
+            }
+        } catch (Throwable ignored) {
+        } finally {
+            if (cursor != null) {
+                cursor.close();
+            }
+        }
+        String last = uri.getLastPathSegment();
+        return last == null ? "skin" : last;
     }
 
     // ---------- 在线索引 ----------
@@ -618,22 +766,6 @@ public final class SkinStore {
         }
         matcher.appendTail(out);
         return out.toString();
-    }
-
-    private static String pickFile(File dir, String suffix) {
-        File[] files = dir.listFiles();
-        if (files == null) {
-            return null;
-        }
-        for (File file : files) {
-            if (file.isFile() && file.getName().toLowerCase(Locale.US).endsWith(suffix)) {
-                if (suffix.equals(".html") && file.getName().equalsIgnoreCase("index.html")) {
-                    return file.getName();
-                }
-                return file.getName();
-            }
-        }
-        return null;
     }
 
     private static String fetchText(String url) throws Exception {

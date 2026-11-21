@@ -57,6 +57,7 @@ public class SettingsActivity extends AppCompatActivity {
     }
 
     private LinearLayout content;
+    private LinearLayout card;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -76,16 +77,17 @@ public class SettingsActivity extends AppCompatActivity {
 
     private void build() {
         content.removeAllViews();
+        card = null;
 
-        content.addView(Ui.section(this, "搜索与主页"));
-        content.addView(Ui.item(this, "搜索引擎",
+        section("搜索与主页");
+        add(Ui.item(this, "搜索引擎",
                 Prefs.searchEngine(), () -> inputDialog("搜索引擎（用 %s 代表关键词）",
                 Prefs.searchEngine(), Prefs::setSearchEngine)));
-        content.addView(Ui.item(this, "主页", Prefs.homepage(),
+        add(Ui.item(this, "主页", Prefs.homepage(),
                 () -> inputDialog("主页地址", Prefs.homepage(), Prefs::setHomepage)));
 
-        content.addView(Ui.section(this, "外观"));
-        content.addView(Ui.item(this, "主题模式", themeName(),
+        section("外观");
+        add(Ui.item(this, "主题模式", themeName(),
                 () -> new MaterialAlertDialogBuilder(this).setTitle("主题模式")
                         .setItems(new String[]{"跟随系统", "浅色", "深色"}, (d, which) -> {
                             Prefs.get().edit().putInt("theme_mode", which).apply();
@@ -95,43 +97,43 @@ public class SettingsActivity extends AppCompatActivity {
                                     : AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM);
                             recreate();
                         }).show()));
-        content.addView(Ui.item(this, "主题色 · 莫奈", Monet.summary(), this::monetDialog));
-        content.addView(Ui.item(this, "主页皮肤", skinSummary(), this::openSkins));
-        content.addView(Ui.item(this, "工具栏布局", toolbarSummary(), this::toolbarDialog));
-        content.addView(switchRow("网页深色", "对浅色网页自动压暗", Prefs.webDark(), value -> {
+        add(Ui.item(this, "主题色 · 莫奈", Monet.summary(), this::monetDialog));
+        add(Ui.item(this, "主页皮肤", skinSummary(), this::openSkins));
+        add(Ui.item(this, "工具栏布局", toolbarSummary(), this::toolbarDialog));
+        add(switchRow("网页深色", "对浅色网页自动压暗", Prefs.webDark(), value -> {
             Prefs.setWebDark(value);
             Toast.makeText(this, "重新加载页面后生效", Toast.LENGTH_SHORT).show();
         }));
-        content.addView(Ui.item(this, "网页字体大小", Prefs.fontZoom() + "%", this::zoomDialog));
-        content.addView(switchRow("下拉刷新", "在页面顶部下拉重新加载",
+        add(Ui.item(this, "网页字体大小", Prefs.fontZoom() + "%", this::zoomDialog));
+        add(switchRow("下拉刷新", "在页面顶部下拉重新加载",
                 Prefs.pullRefresh(), Prefs::setPullRefresh));
-        content.addView(switchRow("边缘滑动", "从屏幕左右边缘滑动前进/后退",
+        add(switchRow("边缘滑动", "从屏幕左右边缘滑动前进/后退",
                 Prefs.edgeGesture(), Prefs::setEdgeGesture));
 
-        content.addView(Ui.section(this, "浏览"));
-        content.addView(Ui.item(this, "浏览器标识", uaName(),
+        section("浏览");
+        add(Ui.item(this, "浏览器标识", uaName(),
                 () -> new MaterialAlertDialogBuilder(this).setTitle("浏览器标识")
                         .setItems(new String[]{"Android（默认）", "桌面版", "自定义"}, (d, which) -> {
                             Prefs.setUaMode(which);
                             if (which == 2) {
                                 inputDialog("自定义 UA", Prefs.customUa(), value -> {
                                     Prefs.setCustomUa(value);
-                                    PprefsUaRefresh();
+                                    toastRefresh();
                                 });
                             }
                         }).show()));
-        content.addView(switchRow("默认无痕", "新标签不记录历史",
+        add(switchRow("默认无痕", "新标签不记录历史",
                 Prefs.incognitoDefault(), Prefs::setIncognitoDefault));
 
-        content.addView(Ui.section(this, "广告拦截"));
-        content.addView(switchRow("启用拦截", AdBlock.ruleCount() + " 条规则",
+        section("广告拦截");
+        add(switchRow("启用拦截", AdBlock.ruleCount() + " 条规则",
                 Prefs.adblockEnabled(), value -> {
                     Prefs.setAdblockEnabled(value);
                     AdBlock.init(this);
                 }));
-        content.addView(Ui.item(this, "订阅地址", Prefs.adblockSubscription(),
+        add(Ui.item(this, "订阅地址", Prefs.adblockSubscription(),
                 () -> inputDialog("订阅地址", Prefs.adblockSubscription(), Prefs::setAdblockSubscription)));
-        content.addView(Ui.item(this, "更新规则", "下载并替换本地规则", () -> {
+        add(Ui.item(this, "更新规则", "下载并替换本地规则", () -> {
             Toast.makeText(this, "开始更新…", Toast.LENGTH_SHORT).show();
             AdBlock.updateSubscription(this, Prefs.adblockSubscription(), (ok, message) ->
                     runOnUiThread(() -> {
@@ -140,45 +142,44 @@ public class SettingsActivity extends AppCompatActivity {
                     }));
         }));
 
-        content.addView(Ui.section(this, "用户脚本"));
-        content.addView(Ui.item(this, "管理脚本", UserScripts.list().size() + " 个已安装", this::manageScripts));
+        section("用户脚本");
+        add(Ui.item(this, "管理脚本", UserScripts.list().size() + " 个已安装", this::manageScripts));
 
-        content.addView(Ui.section(this, "增强能力"));
-        content.addView(Ui.item(this, "AI 接口", aiSummary(),
-                () -> aiDialog()));
-        content.addView(Ui.item(this, "AI 对话", "打开助手", () ->
+        section("增强能力");
+        add(Ui.item(this, "AI 接口", aiSummary(), this::aiDialog));
+        add(Ui.item(this, "AI 对话", "打开助手", () ->
                 startActivity(new Intent(this, AiChatActivity.class))));
-        content.addView(Ui.item(this, "翻译接口", Prefs.transUrl().isEmpty() ? "未配置" : Prefs.transUrl(),
-                () -> transDialog()));
-        content.addView(Ui.item(this, "朗读语速", Prefs.ttsSpeed() + "x",
+        add(Ui.item(this, "翻译接口", Prefs.transUrl().isEmpty() ? "未配置" : Prefs.transUrl(),
+                this::transDialog));
+        add(Ui.item(this, "朗读语速", Prefs.ttsSpeed() + "x",
                 () -> new MaterialAlertDialogBuilder(this).setTitle("朗读语速")
                         .setItems(new String[]{"0.8x", "1.0x", "1.3x", "1.6x"}, (d, which) -> {
                             Prefs.setTtsSpeed(new float[]{0.8f, 1.0f, 1.3f, 1.6f}[which]);
                             build();
                         }).show()));
-        content.addView(Ui.item(this, "媒体嗅探", "查看拦截到的音视频", () ->
+        add(Ui.item(this, "媒体嗅探", "查看拦截到的音视频", () ->
                 startActivity(new Intent(this, MediaListActivity.class))));
-        content.addView(Ui.item(this, "下载管理", "系统下载任务", () ->
+        add(Ui.item(this, "下载管理", "系统下载任务", () ->
                 startActivity(new Intent(this, DownloadActivity.class))));
 
-        content.addView(Ui.section(this, "隐私与同步"));
-        content.addView(Ui.item(this, "密码库", "本地加密保存账号", () ->
+        section("隐私与同步");
+        add(Ui.item(this, "密码库", "本地加密保存账号", () ->
                 startActivity(new Intent(this, VaultActivity.class))));
-        content.addView(Ui.item(this, "WebDAV 同步", Prefs.davUrl().isEmpty() ? "未配置" : Prefs.davUrl(),
+        add(Ui.item(this, "WebDAV 同步", Prefs.davUrl().isEmpty() ? "未配置" : Prefs.davUrl(),
                 () -> startActivity(new Intent(this, SyncActivity.class))));
 
-        content.addView(Ui.section(this, "数据与小组件"));
-        content.addView(Ui.item(this, "导出书签", "生成 Netscape HTML 书签文件", this::exportBookmarks));
-        content.addView(Ui.item(this, "导入书签", "从 HTML 书签文件合并", this::importBookmarks));
-        content.addView(Ui.item(this, "导出历史", "生成 HTML 历史记录", this::exportHistory));
-        content.addView(Ui.item(this, "桌面小组件", "搜索 / 透明搜索 · 长按桌面添加", () ->
+        section("数据与小组件");
+        add(Ui.item(this, "导出书签", "生成 Netscape HTML 书签文件", this::exportBookmarks));
+        add(Ui.item(this, "导入书签", "从 HTML 书签文件合并", this::importBookmarks));
+        add(Ui.item(this, "导出历史", "生成 HTML 历史记录", this::exportHistory));
+        add(Ui.item(this, "桌面小组件", "搜索 / 透明搜索 · 长按桌面添加", () ->
                 new MaterialAlertDialogBuilder(this).setTitle("桌面小组件")
                         .setMessage("长按桌面空白处 → 小组件 → 氢。\n\n"
                                 + "提供「搜索」与「搜索（透明）」两种，点击直接开始输入。")
                         .setPositiveButton("知道了", null).show()));
 
-        content.addView(Ui.section(this, "关于"));
-        content.addView(Ui.item(this, "氢 (H browser)", "版本 " + version(), () ->
+        section("关于");
+        add(Ui.item(this, "氢 (H browser)", "版本 " + version(), () ->
                 new MaterialAlertDialogBuilder(this).setTitle("氢 (H browser)")
                         .setMessage("轻量 Material 3 Expressive 浏览器\n"
                                 + "基于系统 WebView，无遥测、无内置账号服务。\n"
@@ -186,7 +187,7 @@ public class SettingsActivity extends AppCompatActivity {
                                 + "许可证：Apache-2.0")
                         .setPositiveButton("好", null)
                         .show()));
-        content.addView(Ui.item(this, "开源许可", "Apache-2.0 / EasyList CC BY-SA", () ->
+        add(Ui.item(this, "开源许可", "Apache-2.0 / EasyList CC BY-SA", () ->
                 new MaterialAlertDialogBuilder(this).setTitle("开源许可")
                         .setMessage("本应用源代码采用 Apache License 2.0。\n\n"
                                 + "广告拦截种子规则参考 EasyList 格式，"
@@ -195,7 +196,33 @@ public class SettingsActivity extends AppCompatActivity {
                         .show()));
     }
 
-    private void PprefsUaRefresh() {
+    private void section(String label) {
+        content.addView(Ui.section(this, label));
+        card = Ui.card(this);
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        params.setMargins(Ui.dp(this, 12), 0, Ui.dp(this, 12), 0);
+        content.addView(card, params);
+    }
+
+    private void add(android.view.View row) {
+        if (card == null) {
+            section("通用");
+        }
+        if (card.getChildCount() > 0) {
+            android.view.View divider = new android.view.View(this);
+            divider.setBackgroundColor((Ui.color(this, R.color.outline_variant) & 0x00FFFFFF)
+                    | 0x33000000);
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, 1);
+            params.setMargins(Ui.dp(this, 18), 0, 0, 0);
+            card.addView(divider, params);
+        }
+        card.addView(row, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+    }
+
+    private void toastRefresh() {
         Toast.makeText(this, "已保存，重新加载页面后生效", Toast.LENGTH_SHORT).show();
     }
 
@@ -226,10 +253,10 @@ public class SettingsActivity extends AppCompatActivity {
                                    final BooleanSaver saver) {
         LinearLayout row = Ui.row(this);
         row.setBackground(Ui.ripple(this));
-        row.setPadding(Ui.dp(this, 16), Ui.dp(this, 8), Ui.dp(this, 16), Ui.dp(this, 8));
-        row.setMinimumHeight(Ui.dp(this, 56));
+        row.setPadding(Ui.dp(this, 18), Ui.dp(this, 13), Ui.dp(this, 16), Ui.dp(this, 13));
+        row.setMinimumHeight(Ui.dp(this, 58));
         LinearLayout texts = Ui.column(this);
-        texts.addView(Ui.text(this, title, 16, R.color.on_surface));
+        texts.addView(Ui.text(this, title, 15, R.color.on_surface));
         texts.addView(Ui.text(this, summary, 13, R.color.on_surface_variant));
         row.addView(texts, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
