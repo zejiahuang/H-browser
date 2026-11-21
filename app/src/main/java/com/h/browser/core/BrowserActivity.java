@@ -19,6 +19,7 @@ import android.text.Editable;
 import android.text.TextWatcher;
 import android.util.TypedValue;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.inputmethod.EditorInfo;
@@ -36,6 +37,7 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.ArrayAdapter;
 import android.widget.AutoCompleteTextView;
+import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.ImageButton;
 import android.widget.ImageView;
@@ -50,6 +52,9 @@ import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
 import androidx.core.view.WindowInsetsControllerCompat;
+import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
+import androidx.webkit.WebSettingsCompat;
+import androidx.webkit.WebViewAssetLoader;
 
 import com.google.android.material.bottomsheet.BottomSheetDialog;
 import com.google.android.material.card.MaterialCardView;
@@ -58,6 +63,7 @@ import com.google.android.material.snackbar.Snackbar;
 import com.h.browser.R;
 import com.h.browser.adblock.AdBlock;
 import com.h.browser.ai.AiChatActivity;
+import com.h.browser.data.Backup;
 import com.h.browser.data.Db;
 import com.h.browser.data.Prefs;
 import com.h.browser.download.DownloadActivity;
@@ -67,6 +73,7 @@ import com.h.browser.scanner.ScanActivity;
 import com.h.browser.sniffer.MediaListActivity;
 import com.h.browser.sniffer.MediaSniffer;
 import com.h.browser.sync.SyncActivity;
+import com.h.browser.theme.SkinStore;
 import com.h.browser.translate.Translator;
 import com.h.browser.tts.ReadAloudService;
 import com.h.browser.ui.InternalPages;
@@ -81,7 +88,9 @@ import org.json.JSONTokener;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -93,14 +102,34 @@ public class BrowserActivity extends AppCompatActivity {
     private static final int REQ_FILE = 1001;
     private static final int REQ_SCAN = 1002;
     private static final int REQ_FILL = 1003;
+    private static final int REQ_SKIN = 1004;
+    private static final int REQ_IMPORT_BM = 1005;
+    private static final int REQ_EXPORT_BM = 1006;
+    private static final int REQ_EXPORT_HISTORY = 1007;
     private static final int MAX_TABS = 12;
+    private static final String LINK_JS = "(function(){if(window.__hLinkMenu)return;window.__hLinkMenu=1;"
+            + "document.addEventListener('contextmenu',function(e){var t=e.target;"
+            + "var a=t&&t.closest?t.closest('a'):null;var img=t&&t.closest?t.closest('img'):null;"
+            + "if(a||img){e.preventDefault();try{HNative.showLinkMenu(a?a.href:'',img?img.src:'');}catch(x){}}},true);})();";
 
     private LinearLayout root;
     private FrameLayout webContainer;
+    private SwipeRefreshLayout refreshLayout;
     private AutoCompleteTextView address;
+    private ImageButton clearButton;
     private ProgressBar progress;
     private ImageButton backButton;
     private ImageButton forwardButton;
+    private LinearLayout toolbar;
+    private String toolbarPref;
+    private LinearLayout findBar;
+    private EditText findInput;
+    private TextView findCount;
+    private WebViewAssetLoader assetLoader;
+    private float touchStartX;
+    private float touchStartY;
+    private int edgeStart;
+    private boolean edgeHandled;
 
     private final List<Tab> tabs = new ArrayList<>();
     private int current = -1;
@@ -136,9 +165,14 @@ public class BrowserActivity extends AppCompatActivity {
             restoredState = true;
         }
         if (!restoredState) {
-            if (!handleIntent(getIntent())) {
-                newTab(Prefs.homepage(), Prefs.incognitoDefault());
-            }
+            root.post(() -> {
+                if (isFinishing() || current >= 0) {
+                    return;
+                }
+                if (!handleIntent(getIntent())) {
+                    newTab(Prefs.homepage(), Prefs.incognitoDefault());
+                }
+            });
         }
     }
 
@@ -205,7 +239,8 @@ public class BrowserActivity extends AppCompatActivity {
                 new ArrayList<>());
         address.setAdapter(suggestions);
         address.setOnEditorActionListener((v, actionId, event) -> {
-            if (actionId == EditorInfo.IME_ACTION_GO || actionId == EditorInfo.IME_ACTION_SEND) {
+            if (actionId == EditorInfo.IME_ACTION_GO || actionId == EditorInfo.IME_ACTION_SEND
+                    || (event != null && event.getKeyCode() == android.view.KeyEvent.KEYCODE_ENTER)) {
                 search(address.getText().toString());
                 address.clearFocus();
                 hideKeyboard();
@@ -214,6 +249,7 @@ public class BrowserActivity extends AppCompatActivity {
             return false;
         });
         address.setOnFocusChangeListener((v, hasFocus) -> {
+            updateClearButton();
             if (hasFocus) {
                 address.selectAll();
             } else {
@@ -239,6 +275,7 @@ public class BrowserActivity extends AppCompatActivity {
 
             @Override
             public void afterTextChanged(Editable s) {
+                updateClearButton();
                 if (settingAddress || !address.hasFocus()) {
                     return;
                 }
@@ -253,6 +290,14 @@ public class BrowserActivity extends AppCompatActivity {
             }
         });
         barRow.addView(address);
+
+        clearButton = toolButton(R.drawable.ic_close, "清除地址", v -> {
+            address.setText("");
+            address.requestFocus();
+            showKeyboard();
+        });
+        clearButton.setVisibility(View.GONE);
+        barRow.addView(clearButton, new LinearLayout.LayoutParams(dp(36), dp(36)));
 
         ImageButton reload = toolButton(R.drawable.ic_refresh, "刷新", v -> reloadOrStop());
         barRow.addView(reload, new LinearLayout.LayoutParams(dp(40), dp(40)));
@@ -269,27 +314,145 @@ public class BrowserActivity extends AppCompatActivity {
         root.addView(progress, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(3)));
 
+        findBar = buildFindBar();
+        root.addView(findBar, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
         webContainer = new FrameLayout(this);
+        refreshLayout = new SwipeRefreshLayout(this);
+        refreshLayout.setColorSchemeColors(color(R.color.primary));
+        refreshLayout.setEnabled(Prefs.pullRefresh());
+        refreshLayout.setOnRefreshListener(() -> {
+            WebView web = currentWeb();
+            if (web != null) {
+                web.reload();
+            } else {
+                refreshLayout.setRefreshing(false);
+            }
+        });
+        webContainer.addView(refreshLayout, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         root.addView(webContainer, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
-        LinearLayout bottom = new LinearLayout(this);
-        bottom.setOrientation(LinearLayout.HORIZONTAL);
-        bottom.setGravity(Gravity.CENTER_VERTICAL);
-        bottom.setBackgroundColor(color(R.color.surface));
-        bottom.setPadding(dp(4), 0, dp(4), 0);
-        backButton = toolButton(R.drawable.ic_back, "后退", v -> goBack());
-        forwardButton = toolButton(R.drawable.ic_forward, "前进", v -> goForward());
-        ImageButton home = toolButton(R.drawable.ic_home, "主页", v -> handleInternal("v://home"));
-        ImageButton tabsButton = toolButton(R.drawable.ic_tabs, "标签页", v -> showTabs());
-        ImageButton menu = toolButton(R.drawable.ic_more, "菜单", v -> showMenu());
-        bottom.addView(backButton, weightParams());
-        bottom.addView(forwardButton, weightParams());
-        bottom.addView(home, weightParams());
-        bottom.addView(tabsButton, weightParams());
-        bottom.addView(menu, weightParams());
-        root.addView(bottom, new LinearLayout.LayoutParams(
+        toolbar = new LinearLayout(this);
+        toolbar.setOrientation(LinearLayout.HORIZONTAL);
+        toolbar.setGravity(Gravity.CENTER_VERTICAL);
+        toolbar.setBackgroundColor(color(R.color.surface));
+        toolbar.setPadding(dp(4), 0, dp(4), 0);
+        buildToolbar();
+        root.addView(toolbar, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(56)));
+    }
+
+    private void buildToolbar() {
+        if (toolbar == null) {
+            return;
+        }
+        toolbarPref = Prefs.toolbarItems();
+        toolbar.removeAllViews();
+        backButton = null;
+        forwardButton = null;
+        boolean menu = false;
+        String[] items = Prefs.toolbarItems().split(",");
+        for (String item : items) {
+            String id = item.trim();
+            switch (id) {
+                case "back":
+                    backButton = toolButton(R.drawable.ic_back, "后退", v -> goBack());
+                    toolbar.addView(backButton, weightParams());
+                    break;
+                case "forward":
+                    forwardButton = toolButton(R.drawable.ic_forward, "前进", v -> goForward());
+                    toolbar.addView(forwardButton, weightParams());
+                    break;
+                case "home":
+                    toolbar.addView(toolButton(R.drawable.ic_home, "主页",
+                            v -> handleInternal("v://home")), weightParams());
+                    break;
+                case "refresh":
+                    toolbar.addView(toolButton(R.drawable.ic_refresh, "刷新",
+                            v -> reloadOrStop()), weightParams());
+                    break;
+                case "tabs":
+                    toolbar.addView(toolButton(R.drawable.ic_tabs, "标签页",
+                            v -> showTabs()), weightParams());
+                    break;
+                case "newtab":
+                    toolbar.addView(toolButton(R.drawable.ic_add, "新建标签",
+                            v -> newTab(Prefs.homepage(), false)), weightParams());
+                    break;
+                case "menu":
+                    toolbar.addView(toolButton(R.drawable.ic_more, "菜单",
+                            v -> showMenu()), weightParams());
+                    menu = true;
+                    break;
+                default:
+                    break;
+            }
+        }
+        if (!menu) {
+            toolbar.addView(toolButton(R.drawable.ic_more, "菜单", v -> showMenu()), weightParams());
+        }
+        updateUi();
+    }
+
+    private LinearLayout buildFindBar() {
+        LinearLayout bar = new LinearLayout(this);
+        bar.setOrientation(LinearLayout.HORIZONTAL);
+        bar.setGravity(Gravity.CENTER_VERTICAL);
+        bar.setBackgroundColor(color(R.color.surface_container));
+        bar.setPadding(dp(12), dp(4), dp(4), dp(4));
+        bar.setVisibility(View.GONE);
+        findInput = new EditText(this);
+        findInput.setHint("页内查找");
+        findInput.setTextSize(15);
+        findInput.setSingleLine(true);
+        findInput.setImeOptions(EditorInfo.IME_ACTION_SEARCH);
+        findInput.setBackground(null);
+        findInput.setTextColor(color(R.color.on_surface));
+        findInput.setHintTextColor(color(R.color.on_surface_variant));
+        bar.addView(findInput, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        findCount = new TextView(this);
+        findCount.setTextSize(12);
+        findCount.setTextColor(color(R.color.on_surface_variant));
+        bar.addView(findCount);
+        bar.addView(toolButton(R.drawable.ic_back, "上一处", v -> findStep(false)),
+                new LinearLayout.LayoutParams(dp(40), dp(40)));
+        bar.addView(toolButton(R.drawable.ic_forward, "下一处", v -> findStep(true)),
+                new LinearLayout.LayoutParams(dp(40), dp(40)));
+        bar.addView(toolButton(R.drawable.ic_close, "关闭查找", v -> hideFindBar()),
+                new LinearLayout.LayoutParams(dp(40), dp(40)));
+        findInput.addTextChangedListener(new TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) {
+            }
+
+            @Override
+            public void onTextChanged(CharSequence s, int start, int before, int count) {
+            }
+
+            @Override
+            public void afterTextChanged(Editable s) {
+                WebView web = currentWeb();
+                if (web == null) {
+                    return;
+                }
+                String query = s.toString();
+                if (query.isEmpty()) {
+                    web.clearMatches();
+                    findCount.setText("");
+                } else {
+                    web.findAllAsync(query);
+                }
+            }
+        });
+        findInput.setOnEditorActionListener((v, actionId, event) -> {
+            findStep(true);
+            return true;
+        });
+        return bar;
     }
 
     private LinearLayout.LayoutParams weightParams() {
@@ -402,12 +565,19 @@ public class BrowserActivity extends AppCompatActivity {
         settings.setSupportZoom(true);
         settings.setAllowFileAccess(true);
         settings.setJavaScriptCanOpenWindowsAutomatically(true);
+        settings.setTextZoom(Prefs.fontZoom());
         settings.setGeolocationEnabled(false);
         if (Build.VERSION.SDK_INT >= 21) {
             settings.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
         }
         if (Build.VERSION.SDK_INT >= 26) {
             settings.setSafeBrowsingEnabled(true);
+        }
+        if (Prefs.webDark()) {
+            try {
+                WebSettingsCompat.setAlgorithmicDarkeningAllowed(settings, true);
+            } catch (Throwable ignored) {
+            }
         }
         int uaMode = Prefs.uaMode();
         if (uaMode == 1) {
@@ -435,7 +605,27 @@ public class BrowserActivity extends AppCompatActivity {
         web.addJavascriptInterface(new GmBridge(this, web), "HGM");
         web.addJavascriptInterface(new NativeBridge(this), "HNative");
         web.setOnLongClickListener(v -> showLinkMenu(web));
+        web.setFindListener((active, numberOfMatches, done) -> {
+            if (findBar == null || findBar.getVisibility() != View.VISIBLE) {
+                return;
+            }
+            if (numberOfMatches == 0) {
+                findCount.setText("无结果");
+            } else {
+                findCount.setText((active + 1) + "/" + numberOfMatches);
+            }
+        });
         return web;
+    }
+
+    private WebViewAssetLoader assetLoader() {
+        if (assetLoader == null) {
+            assetLoader = new WebViewAssetLoader.Builder()
+                    .addPathHandler("/skin/", new WebViewAssetLoader.InternalStoragePathHandler(
+                            this, new File(getFilesDir(), "skins")))
+                    .build();
+        }
+        return assetLoader;
     }
 
     private void selectTab(int index) {
@@ -451,11 +641,10 @@ public class BrowserActivity extends AppCompatActivity {
         }
         current = index;
         Tab tab = tabs.get(index);
-        webContainer.removeAllViews();
         if (tab.web.getParent() != null) {
             ((ViewGroup) tab.web.getParent()).removeView(tab.web);
         }
-        webContainer.addView(tab.web);
+        refreshLayout.addView(tab.web);
         tab.web.onResume();
         progress.setVisibility(View.GONE);
         updateUi();
@@ -556,6 +745,18 @@ public class BrowserActivity extends AppCompatActivity {
             default:
                 break;
         }
+        if ("home".equals(path)) {
+            SkinStore.Skin skin = SkinStore.active(this);
+            String html = SkinStore.inlineHtml(this);
+            if (skin != null && html != null) {
+                tab.url = url;
+                tab.web.loadDataWithBaseURL(SkinStore.pageUrl(skin.id), html,
+                        "text/html", "utf-8", null);
+                progress.setVisibility(View.GONE);
+                updateAddress();
+                return;
+            }
+        }
         tab.url = url;
         tab.web.loadDataWithBaseURL(url, InternalPages.render(this, url), "text/html", "utf-8", null);
         progress.setVisibility(View.GONE);
@@ -571,6 +772,13 @@ public class BrowserActivity extends AppCompatActivity {
             handleInternal(tab, tab.url);
         } else {
             tab.web.reload();
+        }
+    }
+
+    public void refreshCurrentIfInternal() {
+        Tab tab = currentTab();
+        if (tab != null && UrlUtils.isInternal(tab.url)) {
+            handleInternal(tab, tab.url);
         }
     }
 
@@ -625,13 +833,24 @@ public class BrowserActivity extends AppCompatActivity {
     private void updateAddress() {
         Tab tab = currentTab();
         if (tab == null || address.hasFocus()) {
+            updateClearButton();
             return;
         }
         String url = tab.url;
+        boolean home = UrlUtils.isInternal(url) || SkinStore.isSkinUrl(url);
         settingAddress = true;
-        address.setText(UrlUtils.isInternal(url) ? "" : url);
+        address.setText(home ? "" : url);
         address.setSelection(address.getText().length());
         settingAddress = false;
+        updateClearButton();
+    }
+
+    private void updateClearButton() {
+        if (clearButton == null) {
+            return;
+        }
+        boolean show = address.hasFocus() && address.getText().length() > 0;
+        clearButton.setVisibility(show ? View.VISIBLE : View.GONE);
     }
 
     private void updateUi() {
@@ -640,11 +859,15 @@ public class BrowserActivity extends AppCompatActivity {
             return;
         }
         boolean canBack = tab.web.canGoBack();
-        backButton.setEnabled(canBack);
-        backButton.setAlpha(canBack ? 1f : 0.38f);
+        if (backButton != null) {
+            backButton.setEnabled(canBack);
+            backButton.setAlpha(canBack ? 1f : 0.38f);
+        }
         boolean canForward = tab.web.canGoForward();
-        forwardButton.setEnabled(canForward);
-        forwardButton.setAlpha(canForward ? 1f : 0.38f);
+        if (forwardButton != null) {
+            forwardButton.setEnabled(canForward);
+            forwardButton.setAlpha(canForward ? 1f : 0.38f);
+        }
         updateAddress();
     }
 
@@ -685,12 +908,15 @@ public class BrowserActivity extends AppCompatActivity {
         item(list, dialog, R.drawable.ic_history, "历史记录", () -> openUrl("v://history", false));
         item(list, dialog, R.drawable.ic_download, "下载管理", this::openDownloads);
         item(list, dialog, R.drawable.ic_share, "分享页面", this::sharePage);
+        item(list, dialog, R.drawable.ic_search, "页内查找", this::showFindBar);
+        item(list, dialog, R.drawable.ic_edit, "网页缩放", this::showZoomDialog);
         item(list, dialog, R.drawable.ic_reader, "阅读模式", this::openReader);
         item(list, dialog, R.drawable.ic_tts, "朗读", this::readAloud);
         item(list, dialog, R.drawable.ic_translate, "翻译", this::translateSelection);
         item(list, dialog, R.drawable.ic_ai, "问 AI", this::askAi);
         item(list, dialog, R.drawable.ic_lock, "填充密码", this::fillPassword);
         item(list, dialog, R.drawable.ic_scan, "扫描二维码", this::startScan);
+        item(list, dialog, R.drawable.ic_star, "外观与皮肤", () -> openUrl("v://skins", false));
         item(list, dialog, R.drawable.ic_settings, "设置", this::openSettings);
         dialog.show();
     }
@@ -786,43 +1012,123 @@ public class BrowserActivity extends AppCompatActivity {
             return false;
         }
         int type = result.getType();
-        final String extra = result.getExtra();
+        String extra = result.getExtra();
         if (extra == null) {
             return false;
         }
-        boolean image = type == WebView.HitTestResult.IMAGE_TYPE
-                || type == WebView.HitTestResult.IMAGE_ANCHOR_TYPE
-                || type == WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE;
-        boolean link = type == WebView.HitTestResult.SRC_ANCHOR_TYPE
+        String link = null;
+        String image = null;
+        if (type == WebView.HitTestResult.SRC_ANCHOR_TYPE
                 || type == WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE
-                || type == WebView.HitTestResult.IMAGE_ANCHOR_TYPE;
-        if (!image && !link) {
+                || type == WebView.HitTestResult.IMAGE_ANCHOR_TYPE) {
+            link = extra;
+        } else if (type == WebView.HitTestResult.IMAGE_TYPE) {
+            image = extra;
+        }
+        if (link == null && image == null) {
             return false;
         }
+        showLinkSheet(link, image);
+        return true;
+    }
+
+    public void showLinkSheet(final String link, final String image) {
+        if ((link == null || link.isEmpty()) && (image == null || image.isEmpty())) {
+            return;
+        }
+        final String target = link != null && !link.isEmpty() ? link : image;
         final BottomSheetDialog dialog = newSheet();
         LinearLayout list = listOf(dialog);
-        if (link) {
-            item(list, dialog, R.drawable.ic_forward, "打开链接", () -> openUrl(extra, false));
-            item(list, dialog, R.drawable.ic_add, "在新标签打开", () -> openUrl(extra, true));
+        if (link != null && !link.isEmpty()) {
+            item(list, dialog, R.drawable.ic_forward, "打开链接", () -> openUrl(link, false));
+            item(list, dialog, R.drawable.ic_add, "在新标签打开", () -> openUrl(link, true));
         }
-        item(list, dialog, R.drawable.ic_share, "复制链接", () -> copy(extra));
-        item(list, dialog, R.drawable.ic_download, "下载", () -> Downloader.enqueue(this, extra,
+        item(list, dialog, R.drawable.ic_share, "复制链接", () -> copy(target));
+        item(list, dialog, R.drawable.ic_download, "下载", () -> Downloader.enqueue(this, target,
                 currentWeb() == null ? null : currentWeb().getSettings().getUserAgentString(), null, null));
-        item(list, dialog, R.drawable.ic_share, "分享", () -> share(extra));
-        if (image) {
+        item(list, dialog, R.drawable.ic_share, "分享", () -> share(target));
+        if (image != null && !image.isEmpty()) {
             item(list, dialog, R.drawable.ic_search, "以图搜图", () -> {
                 try {
                     openUrl("https://lens.google.com/uploadbyurl?url="
-                            + URLEncoder.encode(extra, "UTF-8"), true);
+                            + URLEncoder.encode(image, "UTF-8"), true);
                 } catch (Throwable t) {
                     toast("无法打开图片搜索");
                 }
             });
-            item(list, dialog, R.drawable.ic_download, "保存图片", () -> Downloader.enqueue(this, extra,
+            item(list, dialog, R.drawable.ic_download, "保存图片", () -> Downloader.enqueue(this, image,
                     null, null, null));
         }
         dialog.show();
-        return true;
+    }
+
+    private void showFindBar() {
+        findBar.setVisibility(View.VISIBLE);
+        findInput.requestFocus();
+        String selected = "";
+        WebView web = currentWeb();
+        if (web != null) {
+            showSoftInput(findInput);
+        }
+        if (!selected.isEmpty()) {
+            findInput.setText(selected);
+        }
+    }
+
+    private void hideFindBar() {
+        findBar.setVisibility(View.GONE);
+        findInput.setText("");
+        findCount.setText("");
+        WebView web = currentWeb();
+        if (web != null) {
+            web.clearMatches();
+            web.requestFocus();
+        }
+        InputMethodManager manager = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+        if (manager != null) {
+            manager.hideSoftInputFromWindow(findInput.getWindowToken(), 0);
+        }
+    }
+
+    private void findStep(boolean forward) {
+        WebView web = currentWeb();
+        if (web == null || findInput.getText().toString().isEmpty()) {
+            return;
+        }
+        web.findNext(forward);
+    }
+
+    private void showSoftInput(View view) {
+        InputMethodManager manager = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+        if (manager != null) {
+            manager.showSoftInput(view, InputMethodManager.SHOW_IMPLICIT);
+        }
+    }
+
+    private void showZoomDialog() {
+        final int[] values = {80, 90, 100, 110, 125, 150, 175, 200};
+        String[] labels = new String[values.length];
+        int checked = 2;
+        for (int i = 0; i < values.length; i++) {
+            labels[i] = values[i] + "%" + (values[i] == 100 ? "（默认）" : "");
+            if (values[i] == Prefs.fontZoom()) {
+                checked = i;
+            }
+        }
+        new MaterialAlertDialogBuilder(this)
+                .setTitle("网页缩放")
+                .setSingleChoiceItems(labels, checked, (dialog, which) -> {
+                    Prefs.setFontZoom(values[which]);
+                    for (Tab tab : tabs) {
+                        if (tab.web != null) {
+                            tab.web.getSettings().setTextZoom(values[which]);
+                        }
+                    }
+                    dialog.dismiss();
+                    toast("已应用 " + values[which] + "%");
+                })
+                .setNegativeButton("取消", null)
+                .show();
     }
 
     private void copy(String text) {
@@ -1090,6 +1396,53 @@ public class BrowserActivity extends AppCompatActivity {
     }
 
     @Override
+    public boolean dispatchTouchEvent(MotionEvent event) {
+        if (!Prefs.edgeGesture() || tabs.isEmpty()) {
+            return super.dispatchTouchEvent(event);
+        }
+        int edge = dp(28);
+        switch (event.getActionMasked()) {
+            case MotionEvent.ACTION_DOWN:
+                touchStartX = event.getX();
+                touchStartY = event.getY();
+                edgeStart = touchStartX < edge ? -1
+                        : touchStartX > getWindow().getDecorView().getWidth() - edge ? 1 : 0;
+                edgeHandled = false;
+                break;
+            case MotionEvent.ACTION_MOVE:
+                if (!edgeHandled && edgeStart != 0) {
+                    float dx = event.getX() - touchStartX;
+                    float dy = event.getY() - touchStartY;
+                    if (Math.abs(dx) > dp(64) && Math.abs(dy) < dp(72)
+                            && dx * edgeStart > 0) {
+                        WebView web = currentWeb();
+                        if (web != null) {
+                            if (edgeStart < 0 && web.canGoBack()) {
+                                web.goBack();
+                                edgeHandled = true;
+                                getWindow().getDecorView().performHapticFeedback(
+                                        android.view.HapticFeedbackConstants.VIRTUAL_KEY);
+                                return true;
+                            }
+                            if (edgeStart > 0 && web.canGoForward()) {
+                                web.goForward();
+                                edgeHandled = true;
+                                getWindow().getDecorView().performHapticFeedback(
+                                        android.view.HapticFeedbackConstants.VIRTUAL_KEY);
+                                return true;
+                            }
+                        }
+                    }
+                }
+                break;
+            default:
+                edgeHandled = false;
+                break;
+        }
+        return super.dispatchTouchEvent(event);
+    }
+
+    @Override
     public void onBackPressed() {
         WebView web = currentWeb();
         if (web != null && web.canGoBack()) {
@@ -1116,6 +1469,12 @@ public class BrowserActivity extends AppCompatActivity {
         WebView web = currentWeb();
         if (web != null) {
             web.onResume();
+        }
+        if (toolbar != null && !Prefs.toolbarItems().equals(toolbarPref)) {
+            buildToolbar();
+        }
+        if (refreshLayout != null) {
+            refreshLayout.setEnabled(Prefs.pullRefresh());
         }
         updateUi();
     }
@@ -1178,6 +1537,99 @@ public class BrowserActivity extends AppCompatActivity {
             if (resultCode == Activity.RESULT_OK && data != null) {
                 injectCredentials(data.getStringExtra("username"), data.getStringExtra("password"));
             }
+        } else if (requestCode == REQ_SKIN) {
+            if (resultCode == Activity.RESULT_OK && data != null && data.getData() != null) {
+                toast("正在导入主题…");
+                SkinStore.installZip(this, data.getData(), (ok, message) -> runOnUiThread(() -> {
+                    toast(message);
+                    if (ok) {
+                        reloadInternal();
+                    }
+                }));
+            }
+        } else if (requestCode == REQ_IMPORT_BM) {
+            if (resultCode == Activity.RESULT_OK && data != null && data.getData() != null) {
+                final Uri uri = data.getData();
+                new Thread(() -> {
+                    int count = 0;
+                    String error = null;
+                    try (InputStream in = getContentResolver().openInputStream(uri)) {
+                        if (in != null) {
+                            count = Backup.importBookmarks(this, in);
+                        }
+                    } catch (Throwable t) {
+                        error = t.getMessage();
+                    }
+                    final int imported = count;
+                    final String failure = error;
+                    runOnUiThread(() -> toast(failure == null
+                            ? "已导入 " + imported + " 个书签" : "导入失败：" + failure));
+                }, "bookmark-import").start();
+            }
+        } else if (requestCode == REQ_EXPORT_BM || requestCode == REQ_EXPORT_HISTORY) {
+            if (resultCode == Activity.RESULT_OK && data != null && data.getData() != null) {
+                final Uri uri = data.getData();
+                final boolean history = requestCode == REQ_EXPORT_HISTORY;
+                new Thread(() -> {
+                    String error = null;
+                    try (OutputStream out = getContentResolver().openOutputStream(uri, "wt")) {
+                        if (out != null) {
+                            if (history) {
+                                Backup.exportHistory(this, out);
+                            } else {
+                                Backup.exportBookmarks(this, out);
+                            }
+                        }
+                    } catch (Throwable t) {
+                        error = t.getMessage();
+                    }
+                    final String failure = error;
+                    runOnUiThread(() -> toast(failure == null ? "已导出"
+                            : "导出失败：" + failure));
+                }, "backup-export").start();
+            }
+        }
+    }
+
+    public void pickSkinFile() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("*/*");
+        try {
+            startActivityForResult(intent, REQ_SKIN);
+        } catch (Throwable t) {
+            toast("没有可用的文件选择器");
+        }
+    }
+
+    public void importBookmarksFile() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("*/*");
+        try {
+            startActivityForResult(intent, REQ_IMPORT_BM);
+        } catch (Throwable t) {
+            toast("没有可用的文件选择器");
+        }
+    }
+
+    public void exportBookmarksFile() {
+        createDocument("氢·书签.html", REQ_EXPORT_BM);
+    }
+
+    public void exportHistoryFile() {
+        createDocument("氢·历史.html", REQ_EXPORT_HISTORY);
+    }
+
+    private void createDocument(String name, int request) {
+        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("text/html");
+        intent.putExtra(Intent.EXTRA_TITLE, name);
+        try {
+            startActivityForResult(intent, request);
+        } catch (Throwable t) {
+            toast("没有可用的保存位置");
         }
     }
 
@@ -1212,13 +1664,18 @@ public class BrowserActivity extends AppCompatActivity {
             if (title != null) {
                 tab.title = title;
             }
-            if (!UrlUtils.isInternal(url) && !tab.incognito) {
+            if (!UrlUtils.isInternal(url) && !SkinStore.isSkinUrl(url) && !tab.incognito) {
                 Db.get(BrowserActivity.this).addHistory(title, url);
             }
-            injectCosmetic(view, url);
-            UserScripts.inject(view, url);
+            boolean home = UrlUtils.isInternal(url) || SkinStore.isSkinUrl(url);
+            if (!home) {
+                injectCosmetic(view, url);
+                UserScripts.inject(view, url);
+                view.evaluateJavascript(LINK_JS, null);
+            }
             if (tab == currentTab()) {
                 progress.setVisibility(View.GONE);
+                refreshLayout.setRefreshing(false);
                 updateUi();
             }
         }
@@ -1299,6 +1756,12 @@ public class BrowserActivity extends AppCompatActivity {
     private WebResourceResponse intercept(String url, boolean mainFrame) {
         if (url == null || url.startsWith("v://")) {
             return null;
+        }
+        if (SkinStore.isSkinUrl(url)) {
+            WebResourceResponse local = assetLoader().shouldInterceptRequest(Uri.parse(url));
+            if (local != null) {
+                return local;
+            }
         }
         if (UrlUtils.isMedia(url)) {
             MediaSniffer.add(url);

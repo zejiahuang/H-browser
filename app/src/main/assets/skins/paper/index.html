@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>纸</title>
+<style>
+:root{color-scheme:light;--bg:#F6F1E6;--fg:#2D2A24;--muted:#8B8374;--line:#DED5C4;--accent:#B4552D;--card:#FFFDF7}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;min-height:100%;background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,"Noto Sans SC",sans-serif}
+body{background-image:radial-gradient(rgba(45,42,36,.06) 1px,transparent 1px);background-size:16px 16px}
+.wrap{max-width:700px;margin:0 auto;padding:calc(38px + env(safe-area-inset-top)) 20px calc(36px + env(safe-area-inset-bottom))}
+.tag{display:inline-block;border:1px solid var(--line);background:var(--card);border-radius:8px;padding:5px 10px;font-size:11px;letter-spacing:2px;color:var(--muted)}
+h1{font-family:ui-serif,Georgia,"Noto Serif SC",serif;font-size:46px;margin:26px 0 6px;letter-spacing:2px}
+.sub{color:var(--muted);font-size:13px;margin:0 0 26px}
+form{display:flex;gap:8px;background:var(--card);border:1px solid var(--line);border-radius:18px;padding:8px;box-shadow:3px 3px 0 rgba(45,42,36,.08)}
+input{flex:1;border:0;background:transparent;outline:none;color:var(--fg);font-size:16px;padding:10px 12px;min-width:0}
+input::placeholder{color:var(--muted)}
+button{border:0;background:var(--accent);color:#FFF8F0;border-radius:12px;padding:10px 18px;font-size:14px;font-weight:700}
+.engines{display:flex;gap:8px;margin:12px 0 0;flex-wrap:wrap}
+.chip{border:1px dashed var(--line);background:transparent;color:var(--muted);font-weight:500;font-size:12px;padding:7px 12px;border-radius:999px}
+.chip.on{color:var(--accent);border-color:var(--accent);border-style:solid}
+.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:14px}
+.site{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 6px;text-align:center;text-decoration:none;color:var(--fg);font-size:12px;box-shadow:2px 2px 0 rgba(45,42,36,.06)}
+.site .dot{width:30px;height:30px;margin:0 auto 6px;border-radius:9px;background:var(--accent);color:#FFF8F0;display:grid;place-items:center;font-weight:800;font-size:14px;font-family:ui-serif,serif}
+.site span{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+h2{font-family:ui-serif,serif;font-size:15px;margin:30px 0 8px;display:flex;justify-content:space-between;align-items:baseline}
+h2 a{font-family:system-ui;font-size:11px;color:var(--muted);text-decoration:none}
+.list{background:var(--card);border:1px solid var(--line);border-radius:14px;overflow:hidden}
+.row{display:flex;align-items:center;gap:12px;padding:13px 14px;border-bottom:1px dashed var(--line);text-decoration:none;color:var(--fg)}
+.row:last-child{border-bottom:0}
+.row .t{flex:1;min-width:0}
+.row b{display:block;font-size:14px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row small{display:block;color:var(--muted);font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
+.empty{color:var(--muted);font-size:12px;padding:14px}
+.foot{margin-top:26px;display:flex;justify-content:space-between;color:var(--muted);font-size:11px}
+.foot a{color:var(--accent);text-decoration:none;margin-left:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <span class="tag">H BROWSER · 纸</span>
+  <h1>慢慢来</h1>
+  <p class="sub">像翻书一样，安静地浏览</p>
+  <form onsubmit="go(event)"><input id="q" placeholder="搜索或输入网址" autocomplete="off" spellcheck="false"><button type="submit">查阅</button></form>
+  <div class="engines" id="engines"></div>
+  <h2>书签 <a href="javascript:void 0" onclick="HNative.openUrl('v://bookmarks')">全部</a></h2>
+  <div class="grid" id="marks"></div>
+  <h2>最近读过 <a href="javascript:void 0" onclick="HNative.openUrl('v://history')">历史</a></h2>
+  <div class="list" id="recent"></div>
+  <div class="foot"><span id="stats"></span><span><a href="javascript:void 0" onclick="HNative.openUrl('v://skins')">皮肤</a><a href="javascript:void 0" onclick="HNative.openSettings()">设置</a></span></div>
+</div>
+<script>
+var engines=[["百度","https://www.baidu.com/s?wd="],["必应","https://cn.bing.com/search?q="],["Google","https://www.google.com/search?q="]],current=0;
+function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]})}
+function go(e){e.preventDefault();var q=document.getElementById("q").value.trim();if(!q)return;
+  if(/^([a-z]+:\/\/|about:|v:\/\/)/i.test(q)||/^[\w-]+(\.[\w-]+)+(\/|$)/.test(q))HNative.openUrl(q);else HNative.search(q);}
+function render(){var data={};try{data=JSON.parse(HNative.homeData())}catch(e){}
+  var marks=data.bookmarks||[],recent=data.recent||[];
+  document.getElementById("marks").innerHTML=marks.length?marks.slice(0,8).map(function(m){return '<a class="site" href="javascript:void 0" onclick="HNative.openUrl(\''+esc(m.url).replace(/'/g,"\\'")+'\')"><span class="dot">'+esc((m.title||"?").slice(0,1))+'</span><span>'+esc(m.title)+'</span></a>'}).join(""):'<div class="empty">还没有书签</div>';
+  document.getElementById("recent").innerHTML=recent.length?recent.map(function(m){return '<a class="row" href="javascript:void 0" onclick="HNative.openUrl(\''+esc(m.url).replace(/'/g,"\\'")+'\')"><div class="t"><b>'+esc(m.title)+'</b><small>'+esc(m.url)+'</small></div></a>'}).join(""):'<div class="empty">暂无记录</div>';
+  document.getElementById("stats").textContent="已拦截 "+(data.blocked||0)+" 次 · 规则 "+(data.rules||0)+" 条";
+  document.getElementById("engines").innerHTML=engines.map(function(e,i){return '<button class="chip '+(i==current?'on':'')+'" onclick="pick('+i+')">'+e[0]+'</button>'}).join("");}
+function pick(i){current=i;try{HNative.setSearchEngine(engines[i][1]+"%s")}catch(e){}render();document.getElementById("q").focus();}
+render();
+</script>
+</body>
+</html>

@@ -76,6 +76,79 @@ public final class Prefs {
         sp.edit().putString("ua_custom", value).apply();
     }
 
+    public static String skinId() {
+        return sp.getString("skin_id", "hydrogen");
+    }
+
+    public static void setSkinId(String value) {
+        sp.edit().putString("skin_id", value).apply();
+    }
+
+    public static String skinIndex() {
+        return sp.getString("skin_index",
+                "https://raw.githubusercontent.com/JiGuroLGC/BetterVia/main/themes_new.json");
+    }
+
+    public static void setSkinIndex(String value) {
+        sp.edit().putString("skin_index", value).apply();
+    }
+
+    public static int monetSource() {
+        return sp.getInt("monet_source", 0);
+    }
+
+    public static void setMonetSource(int value) {
+        sp.edit().putInt("monet_source", value).apply();
+    }
+
+    public static int monetSeed() {
+        return sp.getInt("monet_seed", 0xFF00B8C4);
+    }
+
+    public static void setMonetSeed(int value) {
+        sp.edit().putInt("monet_seed", value).apply();
+    }
+
+    public static int fontZoom() {
+        return sp.getInt("font_zoom", 100);
+    }
+
+    public static void setFontZoom(int value) {
+        sp.edit().putInt("font_zoom", value).apply();
+    }
+
+    public static boolean pullRefresh() {
+        return sp.getBoolean("pull_refresh", true);
+    }
+
+    public static void setPullRefresh(boolean value) {
+        sp.edit().putBoolean("pull_refresh", value).apply();
+    }
+
+    public static boolean edgeGesture() {
+        return sp.getBoolean("edge_gesture", true);
+    }
+
+    public static void setEdgeGesture(boolean value) {
+        sp.edit().putBoolean("edge_gesture", value).apply();
+    }
+
+    public static boolean webDark() {
+        return sp.getBoolean("web_dark", false);
+    }
+
+    public static void setWebDark(boolean value) {
+        sp.edit().putBoolean("web_dark", value).apply();
+    }
+
+    public static String toolbarItems() {
+        return sp.getString("toolbar_items", "back,forward,home,tabs,menu");
+    }
+
+    public static void setToolbarItems(String value) {
+        sp.edit().putString("toolbar_items", value).apply();
+    }
+
     public static boolean incognitoDefault() {
         return sp.getBoolean("incognito", false);
     }

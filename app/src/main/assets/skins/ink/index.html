@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>墨</title>
+<style>
+:root{color-scheme:dark;--bg:#0A0C0D;--fg:#E9EDEC;--muted:#8A9493;--line:#20282A;--accent:#8FE3C8;--card:#101516}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;min-height:100%;background:var(--bg);color:var(--fg);font-family:ui-serif,Georgia,"Noto Serif SC",serif}
+body{background-image:linear-gradient(var(--line) 1px,transparent 1px);background-size:100% 88px}
+.wrap{max-width:680px;margin:0 auto;padding:calc(40px + env(safe-area-inset-top)) 22px calc(36px + env(safe-area-inset-bottom))}
+.meta{display:flex;justify-content:space-between;color:var(--muted);font-size:11px;letter-spacing:2px;text-transform:uppercase}
+.date{font-variant-numeric:tabular-nums}
+h1{font-size:54px;font-weight:500;letter-spacing:6px;margin:56px 0 4px}
+.sub{color:var(--muted);font-size:13px;letter-spacing:1px;margin:0 0 40px}
+form{display:flex;align-items:center;border-bottom:1px solid var(--fg);padding-bottom:10px}
+input{flex:1;background:transparent;border:0;outline:none;color:var(--fg);font-size:17px;font-family:inherit;min-width:0}
+input::placeholder{color:var(--muted)}
+button{background:transparent;border:1px solid var(--line);color:var(--accent);font-family:inherit;font-size:13px;padding:8px 14px;border-radius:999px}
+.engines{display:flex;gap:10px;margin-top:14px;flex-wrap:wrap}
+.engines button{font-size:12px;color:var(--muted)}
+.engines button.on{color:var(--accent);border-color:var(--accent)}
+h2{font-size:11px;letter-spacing:3px;color:var(--muted);font-weight:400;margin:44px 0 6px}
+.row{display:flex;gap:14px;align-items:baseline;padding:13px 0;border-bottom:1px dashed var(--line);text-decoration:none;color:var(--fg)}
+.row .n{color:var(--muted);font-size:11px;width:22px;font-variant-numeric:tabular-nums}
+.row .t{flex:1;min-width:0}
+.row b{display:block;font-size:15px;font-weight:400;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row small{display:block;color:var(--muted);font-size:10px;letter-spacing:.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:3px}
+.empty{color:var(--muted);font-size:13px;padding:12px 0}
+.foot{margin-top:52px;display:flex;justify-content:space-between;color:var(--muted);font-size:11px;letter-spacing:1px}
+.foot a{color:var(--accent);text-decoration:none;margin-left:16px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="meta"><span id="date"></span><span>H · 墨</span></div>
+  <h1>静</h1>
+  <p class="sub">少一点打扰，多一点阅读</p>
+  <form onsubmit="go(event)"><input id="q" placeholder="搜索或输入网址" autocomplete="off" spellcheck="false"><button type="submit">前往</button></form>
+  <div class="engines" id="engines"></div>
+  <h2>最近</h2><div id="recent"></div>
+  <h2>收藏</h2><div id="marks"></div>
+  <div class="foot"><span id="stats"></span><span><a href="javascript:void 0" onclick="HNative.openUrl('v://skins')">皮肤</a><a href="javascript:void 0" onclick="HNative.openSettings()">设置</a></span></div>
+</div>
+<script>
+var engines=[["百度","https://www.baidu.com/s?wd="],["必应","https://cn.bing.com/search?q="],["Google","https://www.google.com/search?q="]],current=0;
+function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]})}
+function go(e){e.preventDefault();var q=document.getElementById("q").value.trim();if(!q)return;
+  if(/^([a-z]+:\/\/|about:|v:\/\/)/i.test(q)||/^[\w-]+(\.[\w-]+)+(\/|$)/.test(q))HNative.openUrl(q);else HNative.search(q);}
+function render(){var d=new Date();document.getElementById("date").textContent=d.getFullYear()+"."+String(d.getMonth()+1).padStart(2,"0")+"."+String(d.getDate()).padStart(2,"0");
+  var data={};try{data=JSON.parse(HNative.homeData())}catch(e){}
+  var recent=data.recent||[],marks=data.bookmarks||[];
+  var list=function(items){return items.length?items.slice(0,6).map(function(m,i){return '<a class="row" href="javascript:void 0" onclick="HNative.openUrl(\''+esc(m.url).replace(/'/g,"\\'")+'\')"><span class="n">0'+(i+1)+'</span><span class="t"><b>'+esc(m.title)+'</b><small>'+esc(m.url)+'</small></span></a>'}).join(""):'<div class="empty">暂无</div>'};
+  document.getElementById("recent").innerHTML=list(recent);
+  document.getElementById("marks").innerHTML=list(marks);
+  document.getElementById("stats").textContent="已拦截 "+(data.blocked||0)+" 次";
+  document.getElementById("engines").innerHTML=engines.map(function(e,i){return '<button class="'+(i==current?'on':'')+'" onclick="pick('+i+')">'+e[0]+'</button>'}).join("");}
+function pick(i){current=i;try{HNative.setSearchEngine(engines[i][1]+"%s")}catch(e){}render();document.getElementById("q").focus();}
+render();
+</script>
+</body>
+</html>

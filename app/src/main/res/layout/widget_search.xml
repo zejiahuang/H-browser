@@ -13,7 +13,8 @@
         android:layout_width="20dp"
         android:layout_height="20dp"
         android:contentDescription="@string/search_widget_desc"
-        android:src="@drawable/ic_search" />
+        android:src="@drawable/ic_search"
+        android:tint="@color/primary" />
 
     <TextView
         android:id="@+id/widget_hint"

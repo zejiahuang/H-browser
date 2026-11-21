@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>氢</title>
+<style>
+:root{--bg:#EEF7F7;--fg:#102022;--muted:#5A6869;--card:rgba(255,255,255,.62);--line:rgba(16,32,34,.10);--accent:#007A82;--glow1:#7BE0EA;--glow2:#B9F3C9;--shadow:0 20px 50px rgba(0,90,98,.16)}
+@media (prefers-color-scheme:dark){:root{--bg:#0B1416;--fg:#E7F2F2;--muted:#9FB2B3;--card:rgba(24,36,38,.66);--line:rgba(231,242,242,.12);--accent:#6FE3EC;--glow1:#0C4A55;--glow2:#123A2E;--shadow:0 24px 60px rgba(0,0,0,.45)}}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;min-height:100%;background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,"Noto Sans SC",sans-serif}
+body{overflow-x:hidden}
+.bg{position:fixed;inset:0;z-index:-1;background:
+ radial-gradient(48vmax 48vmax at 84% -8%,var(--glow1),transparent 62%),
+ radial-gradient(40vmax 40vmax at -10% 28%,var(--glow2),transparent 60%),
+ radial-gradient(36vmax 36vmax at 50% 118%,var(--glow1),transparent 65%);
+ opacity:.75;filter:saturate(1.1)}
+.wrap{max-width:720px;margin:0 auto;padding:calc(34px + env(safe-area-inset-top)) 20px calc(36px + env(safe-area-inset-bottom))}
+.top{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.brand{display:flex;align-items:center;gap:10px;font-weight:800;letter-spacing:.5px}
+.logo{width:34px;height:34px;border-radius:12px;background:linear-gradient(140deg,var(--accent),#3ED0A8);display:grid;place-items:center;color:#fff;font-size:17px;box-shadow:var(--shadow)}
+.clock{font-variant-numeric:tabular-nums;font-size:13px;color:var(--muted);letter-spacing:1px}
+h1{font-size:40px;line-height:1.1;margin:34px 0 8px;letter-spacing:-1px}
+.sub{color:var(--muted);font-size:14px;margin:0 0 22px}
+.search{background:var(--card);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);border:1px solid var(--line);border-radius:26px;padding:6px;display:flex;align-items:center;box-shadow:var(--shadow);transition:transform .18s ease}
+.search:focus-within{transform:translateY(-2px)}
+.search input{flex:1;border:0;background:transparent;color:var(--fg);font-size:16px;padding:13px 14px;outline:none;min-width:0}
+.search input::placeholder{color:var(--muted)}
+.search button{border:0;border-radius:20px;background:var(--accent);color:#fff;font-size:14px;font-weight:700;padding:10px 18px;margin:2px}
+.engines{display:flex;gap:8px;overflow-x:auto;scrollbar-width:none;margin:14px 2px 0}
+.engines::-webkit-scrollbar{display:none}
+.chip{border:1px solid var(--line);background:var(--card);color:var(--muted);border-radius:999px;padding:7px 13px;font-size:13px;white-space:nowrap}
+.chip.on{color:var(--accent);border-color:var(--accent);font-weight:700}
+section{margin-top:26px}
+.head{display:flex;align-items:baseline;justify-content:space-between;margin:0 4px 10px}
+.head b{font-size:15px}
+.head a{font-size:12px;color:var(--muted);text-decoration:none}
+.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.site{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:12px 8px;text-align:center;text-decoration:none;color:var(--fg);font-size:12px;overflow:hidden;backdrop-filter:blur(14px)}
+.site .dot{width:34px;height:34px;margin:0 auto 7px;border-radius:12px;background:linear-gradient(145deg,var(--accent),#54D7B8);color:#fff;display:grid;place-items:center;font-weight:800;font-size:15px}
+.site span{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.list{background:var(--card);border:1px solid var(--line);border-radius:22px;overflow:hidden;backdrop-filter:blur(16px)}
+.row{display:flex;align-items:center;gap:12px;padding:13px 15px;border-bottom:1px solid var(--line);text-decoration:none;color:var(--fg)}
+.row:last-child{border-bottom:0}
+.row .t{flex:1;min-width:0}
+.row b{display:block;font-size:14px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row small{display:block;color:var(--muted);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
+.arrow{color:var(--muted);font-size:16px}
+.empty{padding:18px 15px;color:var(--muted);font-size:13px}
+.foot{margin-top:28px;display:flex;justify-content:space-between;align-items:center;color:var(--muted);font-size:12px}
+.foot a{color:var(--accent);text-decoration:none;margin-left:14px}
+</style>
+</head>
+<body>
+<div class="bg"></div>
+<div class="wrap">
+  <div class="top"><div class="brand"><span class="logo">H</span>氢</div><span class="clock" id="clock"></span></div>
+  <h1>去哪里？</h1>
+  <p class="sub">轻一点，快一点，属于你自己的浏览器</p>
+  <form class="search" onsubmit="go(event)">
+    <input id="q" placeholder="搜索或输入网址" autocomplete="off" autocapitalize="off" spellcheck="false">
+    <button type="submit">搜索</button>
+  </form>
+  <div class="engines" id="engines"></div>
+  <section><div class="head"><b>快速访问</b><a href="javascript:void 0" onclick="HNative.openUrl('v://bookmarks')">全部</a></div>
+    <div class="grid" id="marks"></div></section>
+  <section><div class="head"><b>最近</b><a href="javascript:void 0" onclick="HNative.openUrl('v://history')">历史</a></div>
+    <div class="list" id="recent"></div></section>
+  <div class="foot"><span id="stats">广告拦截已就绪</span><span><a href="javascript:void 0" onclick="HNative.openUrl('v://skins')">皮肤</a><a href="javascript:void 0" onclick="HNative.openSettings()">设置</a></span></div>
+</div>
+<script>
+var engines=[["百度","https://www.baidu.com/s?wd="],["必应","https://cn.bing.com/search?q="],["Google","https://www.google.com/search?q="],["B站","https://search.bilibili.com/all?keyword="]];
+var current=0;
+function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]})}
+function go(e){e.preventDefault();var q=document.getElementById("q").value.trim();if(!q)return;
+  if(/^([a-z]+:\/\/|about:|v:\/\/)/i.test(q)||/^[\w-]+(\.[\w-]+)+(\/|$)/.test(q)){HNative.openUrl(q);}else{HNative.search(q);}}
+function tick(){var d=new Date();var p=function(n){return n<10?"0"+n:n};
+  document.getElementById("clock").textContent=p(d.getHours())+":"+p(d.getMinutes())+" · "+["日","一","二","三","四","五","六"][d.getDay()];}
+function render(){
+  var data={};try{data=JSON.parse(HNative.homeData())}catch(e){}
+  var marks=data.bookmarks||[];var box=document.getElementById("marks");
+  if(!marks.length){box.innerHTML='<div class="empty">收藏常用网站后会出现在这里</div>';}
+  else{box.innerHTML=marks.slice(0,8).map(function(m){return '<a class="site" href="javascript:void 0" onclick="HNative.openUrl(\''+esc(m.url).replace(/'/g,"\\'")+'\')"><span class="dot">'+esc((m.title||"?").slice(0,1))+'</span><span>'+esc(m.title)+'</span></a>'}).join("");}
+  var recent=data.recent||[];var list=document.getElementById("recent");
+  if(!recent.length){list.innerHTML='<div class="empty">还没有浏览记录，去发现点什么吧</div>';}
+  else{list.innerHTML=recent.map(function(m){return '<a class="row" href="javascript:void 0" onclick="HNative.openUrl(\''+esc(m.url).replace(/'/g,"\\'")+'\')"><div class="t"><b>'+esc(m.title)+'</b><small>'+esc(m.url)+'</small></div><span class="arrow">›</span></a>'}).join("");}
+  document.getElementById("stats").textContent="已拦截 "+(data.blocked||0)+" 次 · 规则 "+(data.rules||0)+" 条";
+  var es=document.getElementById("engines");
+  es.innerHTML=engines.map(function(e,i){return '<button class="chip'+(i==current?' on':'')+'" onclick="pick('+i+')">'+e[0]+'</button>'}).join("");
+}
+function pick(i){current=i;try{HNative.setSearchEngine(engines[i][1]+"%s")}catch(e){}render();document.getElementById("q").focus();}
+tick();setInterval(tick,20000);render();
+</script>
+</body>
+</html>
