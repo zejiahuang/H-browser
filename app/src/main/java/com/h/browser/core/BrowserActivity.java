@@ -1544,7 +1544,7 @@ public class BrowserActivity extends AppCompatActivity {
             } else if (event.getAction() == MotionEvent.ACTION_UP) {
                 float dx = event.getX() - swipeStart[0];
                 float dy = event.getY() - swipeStart[1];
-                if (dy > dp(64) && Math.abs(dy) > Math.abs(dx) * 1.2f) {
+                if (dy > dp(40) && Math.abs(dy) > Math.abs(dx) * 1.2f) {
                     if (closeRef[0] != null) {
                         closeRef[0].run();
                     }
@@ -1559,7 +1559,8 @@ public class BrowserActivity extends AppCompatActivity {
                     return true;
                 }
             }
-            return false;
+            // 非可点击容器需接管 DOWN，否则收不到后续 UP，下滑手势失效
+            return !v.isClickable();
         };
         final View.OnTouchListener swipeListener = swipeRef[0];
         for (int i = 0; i < pages.size(); i++) {
