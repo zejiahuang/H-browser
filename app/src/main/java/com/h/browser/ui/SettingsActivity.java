@@ -6,6 +6,7 @@ import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
+import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.app.WallpaperManager;
@@ -43,6 +44,7 @@ import com.h.browser.data.Prefs;
 import com.h.browser.download.DownloadActivity;
 import com.h.browser.sniffer.MediaListActivity;
 import com.h.browser.sync.SyncActivity;
+import com.h.browser.userscript.CustomTheme;
 import com.h.browser.userscript.UserScripts;
 import com.h.browser.vault.VaultActivity;
 import com.h.browser.widget.BaseSearchWidget;
@@ -1052,6 +1054,92 @@ public class SettingsActivity extends AppCompatActivity {
                 .show();
     }
 
+    private void customThemeDialog() {
+        LinearLayout content = Ui.column(this);
+        int padH = Ui.dp(this, 20);
+        content.setPadding(padH, Ui.dp(this, 4), padH, 0);
+
+        final SwitchCompat cssSwitch = new SwitchCompat(this);
+        cssSwitch.setChecked(CustomTheme.cssEnabled());
+        content.addView(themeSwitchRow("启用自定义 CSS", cssSwitch));
+        final EditText cssInput = themeEditor(CustomTheme.css(),
+                "例如：body{background:#0f1415;color:#d8e2e2}");
+        content.addView(cssInput, themeEditorParams());
+
+        final SwitchCompat jsSwitch = new SwitchCompat(this);
+        jsSwitch.setChecked(CustomTheme.jsEnabled());
+        content.addView(themeSwitchRow("启用自定义 JS", jsSwitch));
+        final EditText jsInput = themeEditor(CustomTheme.js(),
+                "例如：document.title='H';");
+        content.addView(jsInput, themeEditorParams());
+
+        content.addView(Ui.text(this, "保存后每次网页加载都会注入；内置页面不受影响。", 12,
+                R.color.on_surface_variant));
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(content);
+        int maxH = (int) (getResources().getDisplayMetrics().heightPixels * 0.62f);
+        FrameLayout holder = new FrameLayout(this);
+        holder.addView(scroll,
+                new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, maxH));
+
+        new MaterialAlertDialogBuilder(this).setTitle("CSS / JS 主题")
+                .setView(holder)
+                .setPositiveButton("保存", (d, w) -> {
+                    String css = cssInput.getText().toString();
+                    String js = jsInput.getText().toString();
+                    if (css.length() > CustomTheme.MAX_CHARS || js.length() > CustomTheme.MAX_CHARS) {
+                        toast("内容过长（上限 200000 字符）");
+                        return;
+                    }
+                    CustomTheme.setCss(css);
+                    CustomTheme.setJs(js);
+                    CustomTheme.setCssEnabled(cssSwitch.isChecked());
+                    CustomTheme.setJsEnabled(jsSwitch.isChecked());
+                    toast("已保存，刷新网页后生效");
+                    buildDesignerRefresh();
+                })
+                .setNeutralButton("清空", (d, w) -> {
+                    CustomTheme.setCss("");
+                    CustomTheme.setJs("");
+                    toast("自定义主题已清空");
+                    buildDesignerRefresh();
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private LinearLayout themeSwitchRow(String label, SwitchCompat toggle) {
+        LinearLayout row = Ui.row(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setMinimumHeight(Ui.dp(this, 44));
+        row.addView(Ui.text(this, label, 15, R.color.on_surface),
+                new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        row.addView(toggle);
+        return row;
+    }
+
+    private EditText themeEditor(String value, String hint) {
+        EditText input = new EditText(this);
+        input.setText(value);
+        input.setHint(hint);
+        input.setTextSize(13);
+        input.setTypeface(Typeface.MONOSPACE);
+        input.setGravity(Gravity.TOP | Gravity.START);
+        input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE
+                | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        input.setVerticalScrollBarEnabled(true);
+        input.setHorizontallyScrolling(false);
+        return input;
+    }
+
+    private LinearLayout.LayoutParams themeEditorParams() {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(this, 140));
+        params.setMargins(0, Ui.dp(this, 6), 0, Ui.dp(this, 6));
+        return params;
+    }
+
     private void buildDesignerRefresh() {
         buildCategory("custom");
     }
@@ -1064,6 +1152,7 @@ public class SettingsActivity extends AppCompatActivity {
                 "底栏自动隐藏：" + (Prefs.barAutoHide() ? "开" : "关"),
                 "工具栏设置",
                 "定制菜单",
+                CustomTheme.hasContent() ? "CSS / JS 主题（已配置）" : "CSS / JS 主题",
                 "材质与玻璃"
         };
         new MaterialAlertDialogBuilder(this).setTitle("更多外观")
@@ -1092,6 +1181,9 @@ public class SettingsActivity extends AppCompatActivity {
                             break;
                         case 5:
                             MenuDefs.showEditor(this, null);
+                            break;
+                        case 6:
+                            customThemeDialog();
                             break;
                         default:
                             startActivity(new Intent(this, SettingsActivity.class)

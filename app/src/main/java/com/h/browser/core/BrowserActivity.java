@@ -107,6 +107,7 @@ import com.h.browser.ui.MenuDefs;
 import com.h.browser.ui.NativeBridge;
 import com.h.browser.ui.ProgressiveBlurView;
 import com.h.browser.ui.SettingsActivity;
+import com.h.browser.userscript.CustomTheme;
 import com.h.browser.userscript.GmBridge;
 import com.h.browser.userscript.UserScripts;
 import com.h.browser.vault.VaultActivity;
@@ -4524,6 +4525,7 @@ public class BrowserActivity extends AppCompatActivity {
                 tab.errorPage = false;
             }
             injectCosmetic(view, url);
+            CustomTheme.inject(view, url);
             if (tab == currentTab()) {
                 progress.setProgress(0);
                 progress.setVisibility(View.VISIBLE);
@@ -4549,6 +4551,7 @@ public class BrowserActivity extends AppCompatActivity {
                 return;
             }
             injectCosmetic(view, url);
+            CustomTheme.inject(view, url);
             if (!UrlUtils.isInternal(url)) {
                 view.evaluateJavascript(SCROLL_JS, null);
             }
@@ -4584,6 +4587,7 @@ public class BrowserActivity extends AppCompatActivity {
             if (!home) {
                 injectCosmetic(view, url);
                 UserScripts.inject(view, url);
+                CustomTheme.inject(view, url);
                 view.evaluateJavascript(LINK_JS, null);
                 view.evaluateJavascript(SCROLL_JS, null);
             }

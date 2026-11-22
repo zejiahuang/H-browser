@@ -17,6 +17,7 @@ public class HApp extends Application {
         com.h.browser.net.WebViewProxy.apply();
         com.h.browser.ui.Glass.migrate();
         com.h.browser.ui.MenuDefs.migrateLegacy();
+        com.h.browser.userscript.CustomTheme.init(this);
         int mode = Prefs.get().getInt("theme_mode", 0);
         AppCompatDelegate.setDefaultNightMode(mode == 1 ? AppCompatDelegate.MODE_NIGHT_NO
                 : mode == 2 ? AppCompatDelegate.MODE_NIGHT_YES
