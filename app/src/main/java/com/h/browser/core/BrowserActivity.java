@@ -153,6 +153,7 @@ public class BrowserActivity extends AppCompatActivity {
     private FrameLayout webContainer;
     private FrameLayout errorOverlay;
     private TextView errorUrlView;
+    private TextView httpFallbackView;
     private FrameLayout pageHost;
     private FrameLayout homeOverlay;
     private ImageView homeBgImage;
@@ -224,6 +225,7 @@ public class BrowserActivity extends AppCompatActivity {
         String urlBeforeLoad;
         String errorUrl;
         boolean errorPage;
+        String httpsFrom;
         boolean needLoad;
 
         Tab(int id, boolean incognito) {
@@ -1077,6 +1079,25 @@ public class BrowserActivity extends AppCompatActivity {
         box.addView(retry, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
+        httpFallbackView = new TextView(this);
+        httpFallbackView.setText("继续访问 HTTP 地址");
+        httpFallbackView.setTextSize(15);
+        httpFallbackView.setTextColor(Glass.night(this) ? 0xFFDEE4E4 : 0xFF171D1E);
+        httpFallbackView.setGravity(Gravity.CENTER);
+        android.graphics.drawable.GradientDrawable fallbackBg =
+                new android.graphics.drawable.GradientDrawable();
+        fallbackBg.setColor(0x00000000);
+        fallbackBg.setCornerRadius(dp(20));
+        fallbackBg.setStroke(dp(1), Glass.night(this) ? 0x66FFFFFF : 0x33000000);
+        httpFallbackView.setBackground(fallbackBg);
+        httpFallbackView.setPadding(dp(26), dp(12), dp(26), dp(12));
+        httpFallbackView.setVisibility(View.GONE);
+        httpFallbackView.setOnClickListener(v -> fallbackToHttp());
+        LinearLayout.LayoutParams fallbackParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        fallbackParams.setMargins(0, dp(12), 0, 0);
+        box.addView(httpFallbackView, fallbackParams);
+
         errorOverlay.addView(box, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
                 Gravity.CENTER));
@@ -1090,6 +1111,46 @@ public class BrowserActivity extends AppCompatActivity {
             return;
         }
         loadUrl(tab, tab.errorUrl);
+    }
+
+    private void fallbackToHttp() {
+        Tab tab = currentTab();
+        if (tab == null || tab.httpsFrom == null || !tab.httpsFrom.startsWith("http://")) {
+            return;
+        }
+        String target = tab.httpsFrom;
+        String host = UrlUtils.host(target);
+        if (host != null && !host.isEmpty()) {
+            Prefs.get().edit().putString("site_http_" + host, "true").apply();
+        }
+        tab.httpsFrom = null;
+        tab.errorPage = false;
+        tab.errorUrl = null;
+        if (errorOverlay != null) {
+            errorOverlay.setVisibility(View.GONE);
+        }
+        loadUrl(tab, target);
+    }
+
+    private void updateHttpFallback(Tab tab) {
+        if (httpFallbackView == null) {
+            return;
+        }
+        boolean show = tab != null && tab.httpsFrom != null
+                && tab.httpsFrom.startsWith("http://")
+                && tab.errorUrl != null && tab.errorUrl.startsWith("https://")
+                && sameHost(tab.errorUrl, tab.httpsFrom);
+        httpFallbackView.setVisibility(show ? View.VISIBLE : View.GONE);
+    }
+
+    private static boolean sameHost(String a, String b) {
+        try {
+            String ha = Uri.parse(a).getHost();
+            String hb = Uri.parse(b).getHost();
+            return ha != null && ha.equalsIgnoreCase(hb);
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     private void updateHomeOverlay() {
@@ -1663,7 +1724,10 @@ public class BrowserActivity extends AppCompatActivity {
             return;
         }
         url = PrivacyNav.strip(url);
-        url = PrivacyNav.upgrade(url);
+        String upgraded = PrivacyNav.upgrade(url);
+        tab.httpsFrom = upgraded.startsWith("https://") && url.startsWith("http://")
+                ? url : null;
+        url = upgraded;
         applySiteSettings(tab.web, url);
         tab.urlBeforeLoad = tab.url;
         tab.url = url;
@@ -1881,6 +1945,7 @@ public class BrowserActivity extends AppCompatActivity {
             if (errorUrlView != null) {
                 errorUrlView.setText(tab.errorUrl == null ? "" : tab.errorUrl);
             }
+            updateHttpFallback(tab);
             errorOverlay.setVisibility(tab.errorPage ? View.VISIBLE : View.GONE);
         }
         boolean home = UrlUtils.isInternal(tab.url) && !isDataPage(tab.url);
@@ -2016,6 +2081,7 @@ public class BrowserActivity extends AppCompatActivity {
             if (errorUrlView != null) {
                 errorUrlView.setText(failingUrl);
             }
+            updateHttpFallback(tab);
             errorOverlay.setVisibility(View.VISIBLE);
         }
     }
@@ -4500,6 +4566,9 @@ public class BrowserActivity extends AppCompatActivity {
                 return;
             }
             assignPageUrl(tab, url);
+            if (!tab.errorPage) {
+                tab.httpsFrom = null;
+            }
             String title = view.getTitle();
             if (title != null && !"about:blank".equals(title)) {
                 tab.title = title;
@@ -4634,6 +4703,11 @@ public class BrowserActivity extends AppCompatActivity {
                 if ("http".equals(scheme) || "https".equals(scheme)) {
                     String target = PrivacyNav.upgrade(PrivacyNav.strip(url));
                     if (!target.equals(url)) {
+                        Tab tab = tabFor(view);
+                        if (tab != null && target.startsWith("https://")
+                                && url.startsWith("http://")) {
+                            tab.httpsFrom = url;
+                        }
                         view.loadUrl(target, PrivacyNav.headers());
                         return true;
                     }
