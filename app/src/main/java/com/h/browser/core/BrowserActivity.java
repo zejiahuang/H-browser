@@ -174,6 +174,7 @@ public class BrowserActivity extends AppCompatActivity {
         WebView web;
         String url = "v://home";
         String title = "新标签";
+        String urlBeforeLoad;
 
         Tab(int id, boolean incognito) {
             this.id = id;
@@ -1115,12 +1116,13 @@ public class BrowserActivity extends AppCompatActivity {
             public void onDownloadStart(String url, String userAgent, String contentDisposition,
                                         String mimeType, long contentLength) {
                 Downloader.enqueue(BrowserActivity.this, url, userAgent, contentDisposition, mimeType);
-                // 纯下载不会触发页面导航，loadUrl 乐观写入的地址要还原成当前页面，
+                // 纯下载不会触发页面导航，loadUrl 乐观写入的地址要还原成发起下载前的页面，
                 // 否则底栏停在下载链接、主页层被隐藏，与 WebView 实际内容不一致
                 Tab tab = tabFor(web);
-                String actual = web.getUrl();
-                if (tab != null && actual != null && !actual.isEmpty()) {
-                    tab.url = actual;
+                if (tab != null && url.equals(tab.url)
+                        && tab.urlBeforeLoad != null && !tab.urlBeforeLoad.isEmpty()) {
+                    tab.url = tab.urlBeforeLoad;
+                    tab.urlBeforeLoad = null;
                     if (tab == currentTab()) {
                         updateAddress();
                     }
@@ -1210,6 +1212,7 @@ public class BrowserActivity extends AppCompatActivity {
             return;
         }
         applySiteSettings(tab.web, url);
+        tab.urlBeforeLoad = tab.url;
         tab.url = url;
         tab.web.loadUrl(url);
         if (tab == currentTab()) {
