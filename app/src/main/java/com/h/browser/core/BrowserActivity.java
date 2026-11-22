@@ -141,6 +141,12 @@ public class BrowserActivity extends AppCompatActivity {
             + "document.addEventListener('contextmenu',function(e){var t=e.target;"
             + "var a=t&&t.closest?t.closest('a'):null;var img=t&&t.closest?t.closest('img'):null;"
             + "if(a||img){e.preventDefault();try{HNative.showLinkMenu(a?a.href:'',img?img.src:'');}catch(x){}}},true);})();";
+    private static final String SCROLL_JS = "(function(){if(window.__hScrollHook)return;window.__hScrollHook=1;"
+            + "var pend=0;function post(){if(pend)return;pend=1;requestAnimationFrame(function(){pend=0;"
+            + "var y=0;try{y=window.pageYOffset||document.documentElement.scrollTop||0;}catch(e){}"
+            + "try{HScroll.onScroll(Math.round(y));}catch(e){}});}"
+            + "window.addEventListener('scroll',post,{passive:true});"
+            + "document.addEventListener('scroll',post,{passive:true,capture:true});})();";
 
     private LinearLayout root;
     private LinearLayout column;
@@ -912,17 +918,17 @@ public class BrowserActivity extends AppCompatActivity {
             return;
         }
         int delta = y - lastScrollY;
-        if (y <= dp(24)) {
+        if (y <= 24) {
             if (barHidden) {
                 barHidden = false;
                 updateBottomBarLift();
             }
-        } else if (delta > dp(10) && y > dp(180)) {
+        } else if (delta > 10 && y > 180) {
             if (!barHidden) {
                 barHidden = true;
                 updateBottomBarLift();
             }
-        } else if (delta < -dp(6)) {
+        } else if (delta < -6) {
             if (barHidden) {
                 barHidden = false;
                 updateBottomBarLift();
@@ -1380,6 +1386,7 @@ public class BrowserActivity extends AppCompatActivity {
 
     private WebView createWebView(final Tab tab) {
         WebView web = new ScrollWebView(this);
+        web.addJavascriptInterface(new ScrollBridge(), "HScroll");
         ((ScrollWebView) web).setScrollListener(y -> {
             if (progressiveBlur != null) {
                 progressiveBlur.onPageScroll();
@@ -1387,7 +1394,6 @@ public class BrowserActivity extends AppCompatActivity {
             if (bottomBarGlass != null) {
                 bottomBarGlass.refreshAfterIdle();
             }
-            handlePageScroll(y);
         });
         WebSettings settings = web.getSettings();
         settings.setJavaScriptEnabled(true);
@@ -4316,6 +4322,16 @@ public class BrowserActivity extends AppCompatActivity {
         }
     }
 
+    private final class ScrollBridge {
+        @android.webkit.JavascriptInterface
+        public void onScroll(int y) {
+            if (y < 0 || y > 20000000) {
+                return;
+            }
+            runOnUiThread(() -> handlePageScroll(y));
+        }
+    }
+
     private class HClient extends WebViewClient {
         @Override
         public boolean shouldOverrideUrlLoading(WebView view, String url) {
@@ -4353,6 +4369,9 @@ public class BrowserActivity extends AppCompatActivity {
                 return;
             }
             injectCosmetic(view, url);
+            if (!UrlUtils.isInternal(url)) {
+                view.evaluateJavascript(SCROLL_JS, null);
+            }
         }
 
         @Override
@@ -4377,6 +4396,7 @@ public class BrowserActivity extends AppCompatActivity {
                 injectCosmetic(view, url);
                 UserScripts.inject(view, url);
                 view.evaluateJavascript(LINK_JS, null);
+                view.evaluateJavascript(SCROLL_JS, null);
             }
             if (tab == currentTab()) {
                 progress.setVisibility(View.GONE);
