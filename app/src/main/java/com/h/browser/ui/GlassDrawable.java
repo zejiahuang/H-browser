@@ -20,7 +20,8 @@ import android.view.Window;
 
 /**
  * 玻璃背景 Drawable：抓取窗口内的模糊快照，交给 GlassRenderer 做折射着色。
- * 快照捕获前把宿主隐藏一帧，避免把自身画进背景；失败时回退为半透明填充。
+ * 快照不再隐藏宿主或兄弟视图，而是抓完后把它们的区域用邻近页面的像素抹平，
+ * 因此重建背景时整条底栏不会出现消失帧。失败时回退为半透明填充。
  * 首次 bounds 早于 attach 时捕获会落空，draw() 会节流重试。
  */
 public final class GlassDrawable extends Drawable {
@@ -30,7 +31,6 @@ public final class GlassDrawable extends Drawable {
     private final Window window;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Runnable captureTask = this::capture;
-    private final Runnable restoreTask = this::restoreAlpha;
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
     private final Paint tintPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint rimPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -147,7 +147,6 @@ public final class GlassDrawable extends Drawable {
     public void release() {
         released = true;
         handler.removeCallbacks(captureTask);
-        handler.removeCallbacks(restoreTask);
         restoreAlpha();
         renderer.release();
         if (blurred != null && !blurred.isRecycled()) {
@@ -365,14 +364,28 @@ public final class GlassDrawable extends Drawable {
         // 仅当宿主与被捕获窗口是同一个窗口时才需要处理自身像素；
         // 对话框里的玻璃抓取的是 Activity 窗口，没有自采样问题。
         boolean sameWindow = host.getRootView() == window.getDecorView();
+        java.util.List<Rect> hideRects = new java.util.ArrayList<>();
         if (sameWindow) {
-            // 不再把宿主透明化取样（那会让底栏每取一次样闪一下）；
-            // 改成把宿主占据的区域用上方页面像素抹平（见 build），
-            // 视觉上近似“透过玻璃看到页面”，且全程无隐藏帧。
+            int[] decorLoc = new int[2];
+            window.getDecorView().getLocationOnScreen(decorLoc);
+            // 不再把兄弟视图（外阴影/垫层/其他底栏段）透明化取样：那会让它们
+            // 每取一次样就消失一两帧，整条底栏看起来一直在闪。改为照常显示、
+            // 抓完后把这些区域用页面/壁纸像素抹平（见 build）。
             for (View hide : captureHides) {
-                hide.setAlpha(0f);
+                if (hide == null || hide.getVisibility() != View.VISIBLE
+                        || hide.getWidth() <= 0 || hide.getHeight() <= 0) {
+                    continue;
+                }
+                int[] hs = new int[2];
+                hide.getLocationOnScreen(hs);
+                Rect r = new Rect(hs[0] - decorLoc[0], hs[1] - decorLoc[1],
+                        hs[0] - decorLoc[0] + hide.getWidth(),
+                        hs[1] - decorLoc[1] + hide.getHeight());
+                if (r.intersect(src)) {
+                    hideRects.add(new Rect(r.left - src.left, r.top - src.top,
+                            r.right - src.left, r.bottom - src.top));
+                }
             }
-            handler.postDelayed(restoreTask, 500);
         }
         final int smearW = sameWindow ? host.getWidth() : 0;
         final int smearH = sameWindow ? host.getHeight() : 0;
@@ -383,7 +396,7 @@ public final class GlassDrawable extends Drawable {
                         capturing = false;
                         restoreAlpha();
                         if (result == PixelCopy.SUCCESS && !released) {
-                            build(raw, offX, offY, smearW, smearH);
+                            build(raw, offX, offY, smearW, smearH, hideRects);
                         } else {
                             raw.recycle();
                             retryLater();
@@ -405,17 +418,17 @@ public final class GlassDrawable extends Drawable {
     }
 
     /**
-     * 用宿主上方一行页面像素铺满宿主区域：宿主仍在画面上（不隐藏），
-     * 直接取样会把玻璃自身拍进背景，这里把它抹成“页面延续”的样子。
+     * 用区域正上方的像素行铺满该区域：宿主与快照里需要排除的兄弟视图都按此处理，
+     * 视觉上近似“透过玻璃看到页面”，全程不隐藏任何视图，因此不会闪。
      */
-    private void smearHostArea(Bitmap raw, int offX, int offY, int w, int h) {
-        if (w < 2 || h < 2 || raw.isRecycled()) {
+    private void smearArea(Bitmap raw, Rect rect) {
+        if (rect == null || raw.isRecycled()) {
             return;
         }
-        int left = Math.max(0, offX);
-        int top = Math.max(0, offY);
-        int right = Math.min(raw.getWidth(), offX + w);
-        int bottom = Math.min(raw.getHeight(), offY + h);
+        int left = Math.max(0, rect.left);
+        int top = Math.max(0, rect.top);
+        int right = Math.min(raw.getWidth(), rect.right);
+        int bottom = Math.min(raw.getHeight(), rect.bottom);
         if (right - left < 2 || bottom - top < 2) {
             return;
         }
@@ -445,7 +458,6 @@ public final class GlassDrawable extends Drawable {
     }
 
     private void restoreAlpha() {
-        handler.removeCallbacks(restoreTask);
         View host = host();
         if (host != null && host.getAlpha() < 1f) {
             host.setAlpha(1f);
@@ -457,8 +469,16 @@ public final class GlassDrawable extends Drawable {
         }
     }
 
-    private void build(Bitmap raw, int offX, int offY, int smearW, int smearH) {
-        smearHostArea(raw, offX, offY, smearW, smearH);
+    private void build(Bitmap raw, int offX, int offY, int smearW, int smearH,
+                       java.util.List<Rect> hideRects) {
+        // 先抹宿主：兄弟视图取样时“上方一行”可能落在宿主区域，
+        // 此时读到的是已经抹平的页面像素，避免把玻璃自己带回背景。
+        smearArea(raw, new Rect(offX, offY, offX + smearW, offY + smearH));
+        if (hideRects != null) {
+            for (Rect r : hideRects) {
+                smearArea(raw, r);
+            }
+        }
         int radius = Math.max(12, Glass.radius());
         int factor = preset.blurDivisor <= 0 ? 3 : Math.max(2, radius / preset.blurDivisor);
         Bitmap out = GlassRenderer.blur(raw, factor);

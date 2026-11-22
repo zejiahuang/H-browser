@@ -3671,30 +3671,93 @@ public class BrowserActivity extends AppCompatActivity {
         sheet.addView(scroll, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        FrameLayout floating = new FrameLayout(this);
-        floating.setPadding(dp(14), 0, dp(14), 0);
-        int barHeight = bottomBar == null ? dp(200) : bottomBar.getHeight();
+        if (barHidden) {
+            barHidden = false;
+            updateBottomBarLift();
+        }
+        MenuGestureLayout floating = new MenuGestureLayout(this);
+        floating.setClipChildren(false);
+        floating.setClipToPadding(false);
+        View anchorBar = homeBar != null && homeBar.getVisibility() == View.VISIBLE
+                ? homeBar : bottomBar;
+        int barHeight = anchorBar == null || anchorBar.getHeight() <= 0
+                ? dp(56) : anchorBar.getHeight();
         int barMargin = Glass.floatingToolbar() ? dp(Glass.toolbarMargin()) : 0;
+        floating.setPadding(dp(14), 0, dp(14), 0);
         FrameLayout.LayoutParams sheetParams = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
                 Gravity.BOTTOM);
         sheetParams.bottomMargin = barHeight + barMargin + dp(15);
         floating.addView(sheet, sheetParams);
-        floating.setOnClickListener(v -> dialog.dismiss());
-        dialog.setContentView(floating);
-        dialog.setOnShowListener(d -> {
-            android.view.Window w = dialog.getWindow();
-            if (w != null) {
-                w.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(
-                        android.graphics.Color.TRANSPARENT));
-                w.setLayout(ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.MATCH_PARENT);
-                w.setDimAmount(0f);
-                w.clearFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND);
-                w.setGravity(Gravity.BOTTOM);
+        final Runnable closeSheet = () -> {
+            if (!dialog.isShowing()) {
+                return;
             }
-            sheet.setTranslationY(dp(26));
+            float distance = Math.max(0f, sheet.getTranslationY()) + dp(70);
+            sheet.animate().translationY(distance).alpha(0f).setDuration(150)
+                    .withEndAction(dialog::dismiss).start();
+        };
+        floating.setOnClickListener(v -> closeSheet.run());
+        floating.setCallback(new MenuGestureLayout.Callback() {
+            @Override
+            public void onHorizontal(float dx) {
+            }
+
+            @Override
+            public void onPageSwipe(float dx) {
+            }
+
+            @Override
+            public void onDrag(float dy) {
+                sheet.setTranslationY(dy);
+                sheet.setAlpha(1f - Math.min(0.45f,
+                        dy / Math.max(1f, sheet.getHeight()) * 0.8f));
+            }
+
+            @Override
+            public void onDragRelease(float dy, float velocityY) {
+                if (dy > dp(88) || velocityY > 1100f) {
+                    closeSheet.run();
+                    return;
+                }
+                sheet.animate().translationY(0f).alpha(1f).setDuration(160).start();
+            }
+        });
+        if (Build.VERSION.SDK_INT >= 21) {
+            sheet.setElevation(dp(24));
+            sheet.setClipToOutline(false);
+        }
+        dialog.setContentView(floating);
+        // 窗口参数必须在 show() 之前设置，否则首帧会按默认居中小窗绘制，
+        // 出现先闪到一侧再跳到正确位置的跳变（与菜单弹层同因）。
+        android.view.Window w = dialog.getWindow();
+        if (w != null) {
+            w.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(
+                    android.graphics.Color.TRANSPARENT));
+            w.setLayout(ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT);
+            w.setDimAmount(0f);
+            w.clearFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+            w.setGravity(Gravity.BOTTOM);
+            w.setWindowAnimations(0);
+            if (Glass.frosted()) {
+                Glass.applyWindowBlur(w);
+            }
+        }
+        floating.setAlpha(0f);
+        sheet.setTranslationY(dp(26));
+        dialog.setOnShowListener(d -> {
+            floating.animate().alpha(1f).setDuration(120).start();
             sheet.animate().translationY(0f).setDuration(200).start();
+            sheet.post(() -> {
+                int maxH = (int) (getResources().getDisplayMetrics().heightPixels * 0.58f);
+                int extra = sheet.getHeight() - scroll.getHeight();
+                if (sheet.getHeight() > maxH && extra > 0 && extra < maxH) {
+                    ViewGroup.LayoutParams lp = scroll.getLayoutParams();
+                    lp.height = maxH - extra;
+                    scroll.setLayoutParams(lp);
+                }
+            });
         });
         dialog.show();
     }
