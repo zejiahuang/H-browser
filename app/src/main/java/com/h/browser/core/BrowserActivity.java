@@ -202,6 +202,8 @@ public class BrowserActivity extends AppCompatActivity {
     private int nextTabId = 1;
     private boolean settingAddress;
     private boolean restoredState;
+    private boolean suppressSelect;
+    private int lastBarMode = -1;
     private ValueCallback<Uri> legacyFileCallback;
     private ArrayAdapter<String> suggestions;
 
@@ -236,6 +238,7 @@ public class BrowserActivity extends AppCompatActivity {
             restoredState = true;
         }
         if (!restoredState) {
+            presetStartupBarMode();
             root.post(() -> {
                 if (isFinishing() || current >= 0) {
                     return;
@@ -623,11 +626,79 @@ public class BrowserActivity extends AppCompatActivity {
         return segment;
     }
 
+    /**
+     * 冷启动首帧就按目标页面决定栏型，避免先闪两行底栏再切三段。
+     */
+    private void presetStartupBarMode() {
+        String url = startupUrl();
+        if (url == null || !UrlUtils.isHome(url)) {
+            return;
+        }
+        if (homeBar != null) {
+            homeBar.setVisibility(View.VISIBLE);
+        }
+        if (bottomBar != null) {
+            bottomBar.setVisibility(View.GONE);
+        }
+        if (barShadow != null) {
+            barShadow.setVisibility(View.GONE);
+        }
+        if (bottomStrip != null) {
+            bottomStrip.clear();
+        }
+        lastBarMode = 1;
+        for (GlassDrawable g : homeBarGlass) {
+            g.refreshAfterIdle();
+        }
+    }
+
+    private String startupUrl() {
+        Intent intent = getIntent();
+        if (intent != null) {
+            String action = intent.getAction();
+            if (Intent.ACTION_VIEW.equals(action) && intent.getData() != null) {
+                return intent.getData().toString();
+            }
+            if (Intent.ACTION_WEB_SEARCH.equals(action)) {
+                String query = intent.getStringExtra(SearchManager.QUERY);
+                if (query != null) {
+                    return UrlUtils.toUrl(query);
+                }
+            } else {
+                String extra = intent.getStringExtra("url");
+                if (extra != null && !extra.isEmpty()) {
+                    return extra;
+                }
+            }
+        }
+        String json = Prefs.get().getString("tabs_json", "");
+        if (!json.isEmpty()) {
+            try {
+                JSONArray array = new JSONArray(json);
+                if (array.length() > 0) {
+                    int index = Math.max(0,
+                            Math.min(Prefs.get().getInt("tabs_current", 0), array.length() - 1));
+                    JSONObject object = array.optJSONObject(index);
+                    String saved = object == null ? "" : object.optString("url", "");
+                    if (!saved.isEmpty()) {
+                        return saved;
+                    }
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+        return Prefs.homepage();
+    }
+
     private void updateBarMode() {
         Tab tab = currentTab();
+        if (tab == null && lastBarMode >= 0) {
+            return;
+        }
         boolean home = tab != null && isHomeTab(tab);
         boolean split = home && !editingAddress && !fullscreen
                 && homeBar != null && Glass.floatingToolbar();
+        int mode = fullscreen ? 2 : (split ? 1 : 0);
         if ((split || fullscreen) && barHidden) {
             barHidden = false;
             updateBottomBarLift();
@@ -644,16 +715,22 @@ public class BrowserActivity extends AppCompatActivity {
                     ? View.VISIBLE : View.GONE);
         }
         if (split) {
-            if (bottomStrip != null) {
-                bottomStrip.clear();
-            }
+            updateTabCount();
             if (homeBackButton != null) {
                 homeBackButton.setAlpha(1f);
             }
             if (homeForwardButton != null) {
                 homeForwardButton.setAlpha(1f);
             }
-            updateTabCount();
+        }
+        if (mode == lastBarMode) {
+            return;
+        }
+        lastBarMode = mode;
+        if (split) {
+            if (bottomStrip != null) {
+                bottomStrip.clear();
+            }
             for (GlassDrawable g : homeBarGlass) {
                 g.refreshAfterIdle();
             }
@@ -1007,7 +1084,8 @@ public class BrowserActivity extends AppCompatActivity {
             progressiveBlur.setVisibility(View.GONE);
         }
         progressiveBlur.detach();
-        if (bottomBarGlass != null) {
+        if (bottomBarGlass != null && bottomBar != null
+                && bottomBar.getVisibility() == View.VISIBLE) {
             bottomBarGlass.refresh();
         }
     }
@@ -1294,7 +1372,9 @@ public class BrowserActivity extends AppCompatActivity {
         Tab tab = new Tab(nextTabId++, incognito);
         tab.web = createWebView(tab);
         tabs.add(tab);
-        selectTab(tabs.size() - 1);
+        if (!suppressSelect) {
+            selectTab(tabs.size() - 1);
+        }
         return tab;
     }
 
@@ -4026,11 +4106,19 @@ public class BrowserActivity extends AppCompatActivity {
         if (urls.isEmpty()) {
             return false;
         }
-        for (int i = 0; i < urls.size(); i++) {
-            Tab tab = newEmptyTab(false);
-            tab.url = urls.get(i);
-            tab.title = titles.get(i).isEmpty() ? tab.url : titles.get(i);
-            tab.needLoad = true;
+        suppressSelect = true;
+        try {
+            for (int i = 0; i < urls.size(); i++) {
+                Tab tab = newEmptyTab(false);
+                tab.url = urls.get(i);
+                tab.title = titles.get(i).isEmpty() ? tab.url : titles.get(i);
+                tab.needLoad = true;
+            }
+        } finally {
+            suppressSelect = false;
+        }
+        if (tabs.isEmpty()) {
+            return false;
         }
         int index = Math.max(0, Math.min(Prefs.get().getInt("tabs_current", 0), tabs.size() - 1));
         Tab target = tabs.get(index);
@@ -4298,7 +4386,8 @@ public class BrowserActivity extends AppCompatActivity {
                 if (progressiveBlur != null) {
                     progressiveBlur.onPageFinished();
                 }
-                if (bottomBarGlass != null) {
+                if (bottomBarGlass != null && bottomBar != null
+                        && bottomBar.getVisibility() == View.VISIBLE) {
                     bottomBarGlass.refresh();
                 }
             }

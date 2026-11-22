@@ -15,6 +15,7 @@ import androidx.appcompat.app.AppCompatActivity;
 
 import com.h.browser.R;
 import com.h.browser.core.BrowserActivity;
+import com.h.browser.download.Downloader;
 import com.h.browser.ui.Ui;
 
 import java.util.List;
@@ -71,11 +72,25 @@ public class MediaListActivity extends AppCompatActivity {
             LinearLayout item = Ui.item(this, name, url, () -> play(url));
             final String label = name;
             item.setOnLongClickListener(v -> {
-                ClipboardManager manager = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-                if (manager != null) {
-                    manager.setPrimaryClip(ClipData.newPlainText("media", url));
-                    Toast.makeText(this, "已复制 " + label, Toast.LENGTH_SHORT).show();
-                }
+                String[] actions = {"下载", "在浏览器播放", "复制链接"};
+                new com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
+                        .setTitle(label)
+                        .setItems(actions, (dialog, which) -> {
+                            if (which == 0) {
+                                Downloader.enqueue(this, url, null, null, null);
+                            } else if (which == 1) {
+                                play(url);
+                            } else {
+                                ClipboardManager manager = (ClipboardManager)
+                                        getSystemService(Context.CLIPBOARD_SERVICE);
+                                if (manager != null) {
+                                    manager.setPrimaryClip(ClipData.newPlainText("media", url));
+                                    Toast.makeText(this, "已复制 " + label,
+                                            Toast.LENGTH_SHORT).show();
+                                }
+                            }
+                        })
+                        .show();
                 return true;
             });
             content.addView(item);

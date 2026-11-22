@@ -26,7 +26,7 @@ public final class Subscriptions {
     public static final String URL_CHINA =
             "https://easylist-downloads.adblockplus.org/easylistchina.txt";
     public static final String URL_PRIVACY =
-            "https://easylist-downloads.adblockplus.org/easylistprivacy.txt";
+            "https://easylist-downloads.adblockplus.org/easyprivacy.txt";
     public static final String URL_EASYLIST =
             "https://easylist-downloads.adblockplus.org/easylist.txt";
     public static final String URL_CHENGFENG =
@@ -134,6 +134,21 @@ public final class Subscriptions {
                 out.get(0).url = legacy;
             }
             save(context, out);
+        } else {
+            boolean changed = false;
+            for (Sub sub : out) {
+                if ("easylist-privacy".equals(sub.id) && sub.url != null
+                        && sub.url.contains("easylistprivacy.txt")) {
+                    sub.url = URL_PRIVACY;
+                    sub.error = "";
+                    sub.etag = "";
+                    sub.lastModified = "";
+                    changed = true;
+                }
+            }
+            if (changed) {
+                save(context, out);
+            }
         }
         return out;
     }
@@ -344,6 +359,44 @@ public final class Subscriptions {
         }
         writeAtomic(userFile(context), sb.toString());
         return true;
+    }
+
+    public static synchronized int mergeUserRules(Context context, List<String> incoming) {
+        if (incoming == null || incoming.isEmpty()) {
+            return 0;
+        }
+        List<String> rules = userRules(context);
+        int added = 0;
+        for (String raw : incoming) {
+            if (raw == null) {
+                continue;
+            }
+            String line = raw.trim();
+            int idx = line.indexOf("##");
+            if (idx <= 0 || line.length() > 420 || line.contains("\r") || line.contains("\n")) {
+                continue;
+            }
+            String domain = cleanHost(line.substring(0, idx));
+            String selector = line.substring(idx + 2);
+            if (domain.isEmpty() || !Rules.safeSelector(selector)) {
+                continue;
+            }
+            String rule = domain + "##" + selector.trim();
+            if (rules.contains(rule) || rules.size() >= MAX_USER_RULES) {
+                continue;
+            }
+            rules.add(rule);
+            added++;
+        }
+        if (added > 0) {
+            StringBuilder sb = new StringBuilder();
+            for (String rule : rules) {
+                sb.append(rule).append('\n');
+            }
+            writeAtomic(userFile(context), sb.toString());
+            refresh(context);
+        }
+        return added;
     }
 
     public static synchronized boolean removeUserRule(Context context, String line) {

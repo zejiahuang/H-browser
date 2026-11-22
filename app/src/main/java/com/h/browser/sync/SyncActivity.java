@@ -18,6 +18,7 @@ public class SyncActivity extends AppCompatActivity {
     private EditText url;
     private EditText user;
     private EditText pass;
+    private EditText backupPass;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -41,19 +42,22 @@ public class SyncActivity extends AppCompatActivity {
         user.setText(Prefs.davUser());
         pass = Ui.input(this, "密码");
         pass.setText(Prefs.davPass());
+        backupPass = Ui.input(this, "备份口令（可选，用于加密备份文件）");
+        backupPass.setText(Prefs.davBackupPass());
         url.setSingleLine(false);
         form.addView(url);
         form.addView(user);
         form.addView(pass);
+        form.addView(backupPass);
         content.addView(form);
 
-        content.addView(Ui.item(this, "保存并备份", "上传书签、历史与首页设置", () -> {
+        content.addView(Ui.item(this, "保存并备份", "上传设置、书签、脚本与广告规则", () -> {
             save();
             Toast.makeText(this, "备份中…", Toast.LENGTH_SHORT).show();
             WebDav.backup(this, (ok, message) ->
                     runOnUiThread(() -> Toast.makeText(this, message, Toast.LENGTH_LONG).show()));
         }));
-        content.addView(Ui.item(this, "从云端恢复", "合并书签，不删除本地数据", () -> {
+        content.addView(Ui.item(this, "从云端恢复", "合并数据，不删除本地内容", () -> {
             save();
             Toast.makeText(this, "恢复中…", Toast.LENGTH_SHORT).show();
             WebDav.restore(this, (ok, message) ->
@@ -61,8 +65,9 @@ public class SyncActivity extends AppCompatActivity {
         }));
 
         content.addView(Ui.text(this,
-                "使用 WebDAV 的 Basic Auth。建议使用支持应用密码的服务（如 Nextcloud）。"
-                        + "所有数据直接在你的设备与服务器之间传输。",
+                "使用 WebDAV 的 Basic Auth，建议使用支持应用密码的服务（如 Nextcloud）。"
+                        + "填写备份口令后，备份文件会以 AES-GCM 加密上传；恢复加密备份时必须填写同一口令。"
+                        + "数据只在你的设备与服务器之间传输。",
                 13, R.color.on_surface_variant));
         content.getChildAt(content.getChildCount() - 1).setPadding(pad, Ui.dp(this, 16), pad, 0);
     }
@@ -70,5 +75,6 @@ public class SyncActivity extends AppCompatActivity {
     private void save() {
         Prefs.setDav(url.getText().toString().trim(), user.getText().toString().trim(),
                 pass.getText().toString());
+        Prefs.setDavBackupPass(backupPass.getText().toString());
     }
 }

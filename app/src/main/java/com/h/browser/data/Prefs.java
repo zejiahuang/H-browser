@@ -230,6 +230,16 @@ public final class Prefs {
         return secureValue("dav_pass");
     }
 
+    public static String davBackupPass() {
+        return secureValue("dav_backup_pass");
+    }
+
+    public static void setDavBackupPass(String pass) {
+        String encrypted = SecurePrefs.encrypt(pass);
+        sp.edit().putString("dav_backup_pass",
+                encrypted.isEmpty() ? pass : encrypted).apply();
+    }
+
     public static void setDav(String url, String user, String pass) {
         String encryptedUser = SecurePrefs.encrypt(user);
         String encryptedPass = SecurePrefs.encrypt(pass);
