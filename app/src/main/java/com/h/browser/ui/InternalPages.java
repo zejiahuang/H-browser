@@ -6,6 +6,8 @@ import com.h.browser.BuildConfig;
 import com.h.browser.adblock.AdBlock;
 import com.h.browser.core.UrlUtils;
 import com.h.browser.data.Db;
+import com.h.browser.privacy.PrivacyPrefs;
+import com.h.browser.privacy.PrivacyStats;
 
 import java.text.SimpleDateFormat;
 import java.util.Date;
@@ -52,6 +54,8 @@ public final class InternalPages {
                 return wrap("历史", history(context));
             case "log":
                 return wrap("拦截日志", log(context));
+            case "privacy":
+                return wrap("隐私报告", privacy(context));
             case "about":
                 return wrap("关于", about());
             case "home":
@@ -153,6 +157,75 @@ public final class InternalPages {
             sb.append("</div>");
         }
         return sb.toString();
+    }
+
+    private static String privacy(Context context) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("<div class=card><h2>今日</h2><div class=sub style='white-space:pre-wrap'>")
+                .append("广告与跟踪器拦截 ").append(PrivacyStats.blockedToday()).append(" 次\n")
+                .append("指纹读取 ").append(PrivacyStats.fingerprintsToday()).append(" 次\n")
+                .append("清理跟踪参数 ").append(PrivacyStats.strippedToday()).append(" 次\n")
+                .append("权限询问 ").append(PrivacyStats.permissionsToday()).append(" 次</div>")
+                .append("<div class=sub>累计：拦截 ").append(PrivacyStats.blockedTotal())
+                .append(" 次 · 指纹读取 ").append(PrivacyStats.fingerprintsTotal())
+                .append(" 次 · 清参 ").append(PrivacyStats.strippedTotal()).append(" 次</div></div>");
+        sb.append("<div class=card><h2>保护状态</h2>");
+        chip(sb, "不跟踪 DNT/GPC", PrivacyPrefs.dnt());
+        chip(sb, "WebRTC 防泄露", PrivacyPrefs.blockWebRtc());
+        chip(sb, "仅 HTTPS", PrivacyPrefs.httpsOnly());
+        chip(sb, "阻止第三方 Cookie", PrivacyPrefs.blockThirdPartyCookies());
+        chip(sb, "清理跟踪参数", PrivacyPrefs.stripTracking());
+        chip(sb, "指纹保护", PrivacyPrefs.fingerprintMaster());
+        sb.append("<div class=sub style='margin-top:10px'>").append(UrlUtils.escapeHtml(
+                privateDnsSummary(context))).append("</div></div>");
+        org.json.JSONArray frequent = PrivacyStats.frequentPermissions(3);
+        sb.append("<div class=card><h2>近 24 小时频繁请求权限</h2>");
+        if (frequent.length() == 0) {
+            sb.append("<div class=sub>暂无频繁请求敏感权限的站点。</div>");
+        } else {
+            for (int i = 0; i < frequent.length(); i++) {
+                org.json.JSONObject event = frequent.optJSONObject(i);
+                if (event == null) {
+                    continue;
+                }
+                sb.append("<div class=row><div class=t><b>")
+                        .append(UrlUtils.escapeHtml(event.optString("host", "")))
+                        .append("</b><span>").append(UrlUtils.escapeHtml(event.optString("kind", "")))
+                        .append(" · ").append(event.optInt("count", 0))
+                        .append(" 次/24h</span></div></div>");
+            }
+        }
+        sb.append("</div>");
+        sb.append("<div class=card><h2>管理</h2><div class=sub>更多开关、指纹豁免与代理在设置中调整。</div>")
+                .append("<button onclick='HNative.openSettings()'>打开设置</button> ")
+                .append("<button class=ghost onclick=\"HNative.openUrl('v://log')\">拦截日志</button></div>");
+        return sb.toString();
+    }
+
+    private static void chip(StringBuilder sb, String label, boolean on) {
+        sb.append("<span class=chip>").append(UrlUtils.escapeHtml(label)).append("：")
+                .append(on ? "开" : "关").append("</span>");
+    }
+
+    private static String privateDnsSummary(Context context) {
+        if (android.os.Build.VERSION.SDK_INT < 28) {
+            return "系统 Private DNS：当前系统版本不支持";
+        }
+        try {
+            android.net.ConnectivityManager cm = (android.net.ConnectivityManager)
+                    context.getSystemService(Context.CONNECTIVITY_SERVICE);
+            android.net.LinkProperties lp = cm == null || cm.getActiveNetwork() == null
+                    ? null : cm.getLinkProperties(cm.getActiveNetwork());
+            if (lp == null) {
+                return "系统 Private DNS：无活动网络";
+            }
+            String name = lp.getPrivateDnsServerName();
+            return "系统 Private DNS：" + (lp.isPrivateDnsActive()
+                    ? (name == null ? "已启用（自动）" : "已启用 · " + name)
+                    : "未启用（跟随系统设置）");
+        } catch (Throwable t) {
+            return "系统 Private DNS：无法读取";
+        }
     }
 
     private static String about() {

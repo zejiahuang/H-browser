@@ -526,15 +526,189 @@ public class SettingsActivity extends AppCompatActivity {
     }
 
     private void buildPrivacy() {
+        flat("隐私报告", "拦截、指纹读取、权限请求与保护状态", null, () ->
+                startActivity(new Intent(this, BrowserActivity.class)
+                        .setAction(Intent.ACTION_VIEW).setData(Uri.parse("v://privacy"))));
         switchFlat("不跟踪", "发送 DNT / GPC 隐私信号",
                 com.h.browser.privacy.PrivacyPrefs.dnt(),
                 value -> com.h.browser.privacy.PrivacyPrefs.setDnt(value));
         switchFlat("禁用 WebRTC", "阻止网页通过 WebRTC 获取真实 IP",
                 com.h.browser.privacy.PrivacyPrefs.blockWebRtc(),
                 value -> com.h.browser.privacy.PrivacyPrefs.setBlockWebRtc(value));
-        switchFlat("不出售或分享数据",
-                "请求网站不出售或分享我的数据以保护隐私（实验性）",
-                pref("no_sell"), value -> setPref("no_sell", value));
+        switchFlat("清理跟踪参数", "剥离 utm、fbclid 等参数，保留登录回调",
+                com.h.browser.privacy.PrivacyPrefs.stripTracking(),
+                value -> com.h.browser.privacy.PrivacyPrefs.setStripTracking(value));
+        switchFlat("仅 HTTPS", "HTTP 页面自动升级，失败可手动继续",
+                com.h.browser.privacy.PrivacyPrefs.httpsOnly(),
+                value -> com.h.browser.privacy.PrivacyPrefs.setHttpsOnly(value));
+        switchFlat("阻止第三方 Cookie", "可能影响部分站点的登录与嵌入内容",
+                com.h.browser.privacy.PrivacyPrefs.blockThirdPartyCookies(),
+                value -> com.h.browser.privacy.PrivacyPrefs.setBlockThirdPartyCookies(value));
+        switchFlat("指纹保护", "Canvas/WebGL/Audio/字体加入噪声（实验）",
+                com.h.browser.privacy.PrivacyPrefs.fingerprintMaster(),
+                value -> setPref("privacy_fp", value));
+        switchFlat("Canvas 指纹噪声", "对绘图读取加入每站点微噪声",
+                pref("privacy_fp_canvas", true),
+                value -> setPref("privacy_fp_canvas", value));
+        switchFlat("WebGL 指纹噪声", "泛化显卡厂商与渲染器信息",
+                pref("privacy_fp_webgl", true),
+                value -> setPref("privacy_fp_webgl", value));
+        switchFlat("Audio 指纹噪声", "对音频处理输出加入听不见的噪声",
+                pref("privacy_fp_audio", true),
+                value -> setPref("privacy_fp_audio", value));
+        switchFlat("字体指纹干扰", "降低通过文字测量枚举本机字体的准确性",
+                pref("privacy_fp_fonts", true),
+                value -> setPref("privacy_fp_fonts", value));
+        flat("指纹豁免站点", fingerprintExemptSummary(), null, this::fingerprintExemptionsDialog);
+        flat("代理服务器", proxySummary(), null, this::proxyDialog);
+    }
+
+    private String fingerprintExemptSummary() {
+        java.util.Set<String> hosts = com.h.browser.privacy.PrivacyPrefs.fingerprintExemptions();
+        if (hosts.isEmpty()) {
+            return "未豁免任何站点";
+        }
+        StringBuilder sb = new StringBuilder();
+        int i = 0;
+        for (String host : hosts) {
+            if (i++ > 0) {
+                sb.append("、");
+            }
+            sb.append(host);
+            if (i >= 3) {
+                sb.append(" 等 ").append(hosts.size()).append(" 个");
+                break;
+            }
+        }
+        return sb.toString();
+    }
+
+    private String proxySummary() {
+        if (!com.h.browser.privacy.PrivacyPrefs.proxyEnabled()) {
+            String err = com.h.browser.net.WebViewProxy.lastError();
+            return err == null ? "未启用（HTTP/HTTPS）" : "未启用 · " + err;
+        }
+        String summary = "已启用 · " + com.h.browser.privacy.PrivacyPrefs.proxyHost()
+                + ":" + com.h.browser.privacy.PrivacyPrefs.proxyPort();
+        String err = com.h.browser.net.WebViewProxy.lastError();
+        return err == null ? summary : summary + " · " + err;
+    }
+
+    private void fingerprintExemptionsDialog() {
+        final java.util.List<String> items = new ArrayList<>(
+                com.h.browser.privacy.PrivacyPrefs.fingerprintExemptions());
+        items.add("＋ 添加豁免站点");
+        new MaterialAlertDialogBuilder(this)
+                .setTitle("指纹豁免站点")
+                .setItems(items.toArray(new String[0]), (d, which) -> {
+                    if (which == items.size() - 1) {
+                        addFingerprintExemption();
+                        return;
+                    }
+                    String host = items.get(which);
+                    new MaterialAlertDialogBuilder(this).setTitle(host)
+                            .setMessage("移除该站点的指纹豁免？")
+                            .setPositiveButton("移除", (d2, w2) -> {
+                                java.util.Set<String> hosts =
+                                        com.h.browser.privacy.PrivacyPrefs.fingerprintExemptions();
+                                hosts.remove(host);
+                                com.h.browser.privacy.PrivacyPrefs.setFingerprintExemptions(hosts);
+                                buildCategory("privacy");
+                            })
+                            .setNegativeButton("取消", null)
+                            .show();
+                })
+                .setNegativeButton("关闭", null)
+                .show();
+    }
+
+    private void addFingerprintExemption() {
+        EditText input = new EditText(this);
+        input.setHint("example.com");
+        input.setSingleLine(true);
+        LinearLayout wrapper = Ui.column(this);
+        int pad = Ui.dp(this, 20);
+        wrapper.setPadding(pad, Ui.dp(this, 8), pad, 0);
+        wrapper.addView(input);
+        new MaterialAlertDialogBuilder(this).setTitle("添加豁免站点")
+                .setView(wrapper)
+                .setPositiveButton("添加", (d, w) -> {
+                    String host = input.getText().toString().trim()
+                            .toLowerCase(java.util.Locale.US);
+                    if (host.isEmpty()) {
+                        return;
+                    }
+                    java.util.Set<String> hosts =
+                            com.h.browser.privacy.PrivacyPrefs.fingerprintExemptions();
+                    hosts.add(host);
+                    com.h.browser.privacy.PrivacyPrefs.setFingerprintExemptions(hosts);
+                    buildCategory("privacy");
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void proxyDialog() {
+        LinearLayout form = Ui.column(this);
+        int pad = Ui.dp(this, 20);
+        form.setPadding(pad, Ui.dp(this, 8), pad, 0);
+        EditText host = new EditText(this);
+        host.setHint("代理主机，如 127.0.0.1");
+        host.setSingleLine(true);
+        host.setText(com.h.browser.privacy.PrivacyPrefs.proxyHost());
+        EditText port = new EditText(this);
+        port.setHint("端口，如 7890");
+        port.setInputType(InputType.TYPE_CLASS_NUMBER);
+        port.setSingleLine(true);
+        int currentPort = com.h.browser.privacy.PrivacyPrefs.proxyPort();
+        if (currentPort > 0) {
+            port.setText(String.valueOf(currentPort));
+        }
+        EditText user = new EditText(this);
+        user.setHint("用户名（可选）");
+        user.setSingleLine(true);
+        user.setText(com.h.browser.privacy.PrivacyPrefs.proxyUser());
+        EditText pass = new EditText(this);
+        pass.setHint("密码（可选，加密保存）");
+        pass.setSingleLine(true);
+        pass.setInputType(InputType.TYPE_CLASS_TEXT
+                | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        pass.setText(com.h.browser.privacy.PrivacyPrefs.proxyPass());
+        form.addView(host);
+        form.addView(port);
+        form.addView(user);
+        form.addView(pass);
+        form.addView(Ui.text(this, "仅支持 HTTP/HTTPS 代理。认证只在挑战主机等于代理主机时提交；"
+                + "SOCKS5 认证中转将在后续版本提供。", 12, R.color.on_surface_variant));
+        new MaterialAlertDialogBuilder(this).setTitle("代理服务器")
+                .setView(form)
+                .setPositiveButton("保存并应用", (d, w) -> {
+                    String h = host.getText().toString().trim();
+                    int portValue = 0;
+                    try {
+                        portValue = Integer.parseInt(port.getText().toString().trim());
+                    } catch (Throwable ignored) {
+                    }
+                    boolean enabled = !h.isEmpty() && portValue > 0 && portValue <= 65535;
+                    com.h.browser.privacy.PrivacyPrefs.setProxy(enabled, h, portValue,
+                            user.getText().toString().trim(), pass.getText().toString());
+                    com.h.browser.net.WebViewProxy.apply();
+                    String err = com.h.browser.net.WebViewProxy.lastError();
+                    toast(err != null ? err : enabled ? "代理已启用" : "代理未启用：主机或端口无效");
+                    buildCategory("privacy");
+                })
+                .setNeutralButton("停用", (d, w) -> {
+                    com.h.browser.privacy.PrivacyPrefs.setProxy(false,
+                            com.h.browser.privacy.PrivacyPrefs.proxyHost(),
+                            com.h.browser.privacy.PrivacyPrefs.proxyPort(),
+                            com.h.browser.privacy.PrivacyPrefs.proxyUser(),
+                            com.h.browser.privacy.PrivacyPrefs.proxyPass());
+                    com.h.browser.net.WebViewProxy.apply();
+                    toast("代理已停用");
+                    buildCategory("privacy");
+                })
+                .setNegativeButton("取消", null)
+                .show();
     }
 
     private void buildAdvanced() {

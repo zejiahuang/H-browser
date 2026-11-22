@@ -2360,6 +2360,9 @@ public class BrowserActivity extends AppCompatActivity {
             case "report":
                 task = this::reportSite;
                 break;
+            case "privacy":
+                task = this::showPrivacyReport;
+                break;
             case MenuDefs.CUSTOMIZE_ID:
                 task = this::customizeMenu;
                 break;
@@ -2614,35 +2617,131 @@ public class BrowserActivity extends AppCompatActivity {
             return;
         }
         final String host = UrlUtils.host(url);
-        final boolean[] values = {
-                Prefs.get().getBoolean("site_js_" + host, true),
+        final WebView web = tab.web;
+        final boolean[] changed = {false};
+        final BottomSheetDialog dialog = newSheet();
+        LinearLayout list = listOf(dialog);
+        sheetTitle(list, host, "网站设定 · 仅对当前网站生效");
+        sheetToggle(list, R.drawable.ic_source, "JavaScript", "关闭后本页脚本不再执行",
+                Prefs.get().getBoolean("site_js_" + host, true), checked -> {
+                    Prefs.get().edit().putBoolean("site_js_" + host, checked).apply();
+                    applySiteSettings(web, url);
+                    changed[0] = true;
+                });
+        sheetToggle(list, R.drawable.ic_image, "加载图片", "关闭后本页不下载图片",
                 Prefs.get().getBoolean("site_img_" + host,
-                        !Prefs.get().getBoolean("block_images", false)),
-                Prefs.get().getBoolean("site_ua_" + host, false),
-                Prefs.get().getBoolean("site_ad_" + host, true)};
-        new MaterialAlertDialogBuilder(this)
-                .setTitle(host)
-                .setMultiChoiceItems(new String[]{"JavaScript", "加载图片", "桌面版网页", "广告拦截"},
-                        values, (d, which, checked) -> values[which] = checked)
-                .setPositiveButton("保存", (d, w) -> {
-                    Prefs.get().edit()
-                            .putBoolean("site_js_" + host, values[0])
-                            .putBoolean("site_img_" + host, values[1])
-                            .putBoolean("site_ua_" + host, values[2])
-                            .putBoolean("site_ad_" + host, values[3]).apply();
-                    applySiteSettings(tab.web, url);
-                    tab.web.reload();
-                    toast("已保存网站设定");
-                })
-                .setNeutralButton("重置", (d, w) -> {
-                    Prefs.get().edit()
-                            .remove("site_js_" + host).remove("site_img_" + host)
-                            .remove("site_ua_" + host).remove("site_ad_" + host).apply();
-                    applySiteSettings(tab.web, url);
-                    tab.web.reload();
-                })
-                .setNegativeButton("取消", null)
-                .show();
+                        !Prefs.get().getBoolean("block_images", false)), checked -> {
+                    Prefs.get().edit().putBoolean("site_img_" + host, checked).apply();
+                    applySiteSettings(web, url);
+                    changed[0] = true;
+                });
+        sheetToggle(list, R.drawable.ic_desktop, "桌面版网页", "以电脑浏览器标识请求本页",
+                Prefs.get().getBoolean("site_ua_" + host, false), checked -> {
+                    Prefs.get().edit().putBoolean("site_ua_" + host, checked).apply();
+                    applySiteSettings(web, url);
+                    changed[0] = true;
+                });
+        sheetToggle(list, R.drawable.ic_block, "广告拦截", "关闭后本站不再过滤广告与跟踪器",
+                Prefs.get().getBoolean("site_ad_" + host, true), checked -> {
+                    Prefs.get().edit().putBoolean("site_ad_" + host, checked).apply();
+                    changed[0] = true;
+                });
+        sheetToggle(list, R.drawable.ic_shield_check, "清理跟踪参数",
+                "关闭后本站链接保留 utm 等跟踪参数",
+                !"false".equals(Prefs.get().getString("site_strip_" + host, null)), checked -> {
+                    android.content.SharedPreferences.Editor editor = Prefs.get().edit();
+                    if (checked) {
+                        editor.remove("site_strip_" + host);
+                    } else {
+                        editor.putString("site_strip_" + host, "false");
+                    }
+                    editor.apply();
+                });
+        sheetToggle(list, R.drawable.ic_lock, "仅 HTTPS",
+                "关闭后本站允许以 HTTP 访问",
+                !"true".equals(Prefs.get().getString("site_http_" + host, null)), checked -> {
+                    android.content.SharedPreferences.Editor editor = Prefs.get().edit();
+                    if (checked) {
+                        editor.remove("site_http_" + host);
+                    } else {
+                        editor.putString("site_http_" + host, "true");
+                    }
+                    editor.apply();
+                });
+        sheetNote(list, permissionSummary(host));
+        sheetButtonRow(list, "重置本站权限", color(R.color.primary), () -> {
+            PermissionStore.clearHost(this, host);
+            toast("已重置本站权限");
+        });
+        sheetButtonRow(list, "重置网站设定", color(R.color.primary), () -> {
+            Prefs.get().edit()
+                    .remove("site_js_" + host).remove("site_img_" + host)
+                    .remove("site_ua_" + host).remove("site_ad_" + host)
+                    .remove("site_strip_" + host).remove("site_http_" + host).apply();
+            applySiteSettings(web, url);
+            if (web != null) {
+                web.reload();
+            }
+            dialog.dismiss();
+            toast("已重置网站设定");
+        });
+        sheetButtonRow(list, "清除本站数据（Cookie/存储）", color(R.color.error),
+                () -> clearSiteData(host, web));
+        dialog.setOnDismissListener(d -> {
+            if (changed[0] && web != null) {
+                web.reload();
+            }
+        });
+        dialog.show();
+    }
+
+    private String permissionSummary(String host) {
+        String[] types = {"geolocation", "camera", "microphone"};
+        String[] names = {"位置", "相机", "麦克风"};
+        StringBuilder sb = new StringBuilder("本站权限：");
+        for (int i = 0; i < types.length; i++) {
+            int mode = PermissionStore.mode(this, types[i], host);
+            String value = mode == PermissionStore.ALLOW ? "允许"
+                    : mode == PermissionStore.DENY ? "拒绝" : "询问";
+            if (i > 0) {
+                sb.append(" · ");
+            }
+            sb.append(names[i]).append(' ').append(value);
+        }
+        return sb.toString();
+    }
+
+    private void clearSiteData(String host, WebView web) {
+        try {
+            CookieManager cm = CookieManager.getInstance();
+            for (String scheme : new String[]{"https", "http"}) {
+                String base = scheme + "://" + host;
+                String cookie = cm.getCookie(base);
+                if (cookie == null) {
+                    continue;
+                }
+                for (String pair : cookie.split(";")) {
+                    String name = pair.split("=", 2)[0].trim();
+                    if (!name.isEmpty()) {
+                        cm.setCookie(base, name + "=; Max-Age=0; Path=/");
+                    }
+                }
+            }
+            cm.flush();
+        } catch (Throwable ignored) {
+        }
+        if (Build.VERSION.SDK_INT >= 29) {
+            try {
+                android.webkit.WebStorage storage = android.webkit.WebStorage.getInstance();
+                storage.deleteOrigin("https://" + host);
+                storage.deleteOrigin("http://" + host);
+            } catch (Throwable ignored) {
+            }
+        }
+        if (web != null) {
+            web.reload();
+        }
+        toast("已清除 " + host + " 的 Cookie 与站点存储");
     }
 
     private boolean siteAdAllowed(String url) {
@@ -2735,13 +2834,24 @@ public class BrowserActivity extends AppCompatActivity {
         } catch (Throwable t) {
             host = url;
         }
-        String message = (host == null || host.isEmpty() ? url : host)
-                + "\n\n连接" + (secure ? "安全（HTTPS）" : "不安全（HTTP）")
-                + (tab.incognito ? "\n当前为无痕标签页" : "");
-        new MaterialAlertDialogBuilder(this).setTitle("网站信息")
-                .setMessage(message)
-                .setPositiveButton("确定", null)
-                .show();
+        String display = host == null || host.isEmpty() ? String.valueOf(url) : host;
+        final BottomSheetDialog dialog = newSheet();
+        LinearLayout list = listOf(dialog);
+        sheetTitle(list, display, "网站信息");
+        sheetNote(list, "连接" + (secure ? "安全（HTTPS）" : "不安全（HTTP）")
+                + (tab.incognito ? "\n无痕标签页：不记录历史与隐私统计" : "")
+                + (url == null || url.isEmpty() ? "" : "\n" + url));
+        if (!UrlUtils.isInternal(url)) {
+            sheetButtonRow(list, "网站设定", color(R.color.primary), () -> {
+                dialog.dismiss();
+                siteSettingsDialog();
+            });
+            sheetButtonRow(list, "网络日志", color(R.color.primary), () -> {
+                dialog.dismiss();
+                showNetLog();
+            });
+        }
+        dialog.show();
     }
 
     private void showNetLog() {
@@ -2766,6 +2876,119 @@ public class BrowserActivity extends AppCompatActivity {
                 })
                 .setNegativeButton("关闭", null)
                 .show();
+    }
+
+    private void showPrivacyReport() {
+        final BottomSheetDialog dialog = newSheet();
+        LinearLayout list = listOf(dialog);
+        sheetTitle(list, "隐私报告",
+                "今日拦截 " + PrivacyStats.blockedToday()
+                        + " · 指纹读取 " + PrivacyStats.fingerprintsToday()
+                        + " · 清参 " + PrivacyStats.strippedToday());
+        StringBuilder stats = new StringBuilder();
+        stats.append("广告与跟踪器：今日 ").append(PrivacyStats.blockedToday())
+                .append(" 次，累计 ").append(PrivacyStats.blockedTotal()).append(" 次（")
+                .append(AdBlock.statsSummary()).append("）\n")
+                .append("指纹读取：今日 ").append(PrivacyStats.fingerprintsToday())
+                .append(" 次，累计 ").append(PrivacyStats.fingerprintsTotal()).append(" 次\n")
+                .append("清理跟踪参数：今日 ").append(PrivacyStats.strippedToday())
+                .append(" 次，累计 ").append(PrivacyStats.strippedTotal()).append(" 次\n")
+                .append("权限询问：今日 ").append(PrivacyStats.permissionsToday()).append(" 次");
+        org.json.JSONArray frequent = PrivacyStats.frequentPermissions(3);
+        if (frequent.length() > 0) {
+            stats.append("\n\n近 24 小时频繁请求敏感权限的站点：");
+            for (int i = 0; i < frequent.length(); i++) {
+                org.json.JSONObject event = frequent.optJSONObject(i);
+                if (event == null) {
+                    continue;
+                }
+                String kind = event.optString("kind", "");
+                String name = "geolocation".equals(kind) ? "位置"
+                        : kind.startsWith("camera") && kind.contains("microphone") ? "相机+麦克风"
+                        : "camera".equals(kind) ? "相机"
+                        : "microphone".equals(kind) ? "麦克风" : kind;
+                stats.append("\n· ").append(event.optString("host", ""))
+                        .append("（").append(name).append(" ×")
+                        .append(event.optInt("count", 0)).append("）");
+            }
+        }
+        sheetNote(list, stats.toString());
+        sheetToggle(list, R.drawable.ic_shield_check, "不跟踪（DNT / GPC）",
+                "请求头与页面均发送隐私信号", PrivacyPrefs.dnt(), checked -> {
+                    PrivacyPrefs.setDnt(checked);
+                    refreshPrivacyInjection();
+                });
+        sheetToggle(list, R.drawable.ic_visibility_off, "WebRTC 防泄露",
+                "阻止网页利用 WebRTC 探测真实 IP", PrivacyPrefs.blockWebRtc(), checked -> {
+                    PrivacyPrefs.setBlockWebRtc(checked);
+                    refreshPrivacyInjection();
+                });
+        sheetToggle(list, R.drawable.ic_lock, "仅 HTTPS",
+                "HTTP 页面自动升级；失败可手动继续", PrivacyPrefs.httpsOnly(),
+                PrivacyPrefs::setHttpsOnly);
+        sheetToggle(list, R.drawable.ic_block, "阻止第三方 Cookie",
+                "关闭可提高兼容性；默认允许", PrivacyPrefs.blockThirdPartyCookies(), checked -> {
+                    PrivacyPrefs.setBlockThirdPartyCookies(checked);
+                    for (Tab tab : tabs) {
+                        if (tab.web != null) {
+                            CookieManager.getInstance().setAcceptThirdPartyCookies(
+                                    tab.web, !checked);
+                        }
+                    }
+                });
+        sheetToggle(list, R.drawable.ic_tune, "清理跟踪参数",
+                "剥离 utm、fbclid 等参数，保留登录回调", PrivacyPrefs.stripTracking(),
+                PrivacyPrefs::setStripTracking);
+        sheetToggle(list, R.drawable.ic_shield_check, "指纹保护",
+                "Canvas / WebGL 微噪声，站点可单独豁免", PrivacyPrefs.fingerprintMaster(),
+                checked -> {
+                    Prefs.get().edit().putBoolean("privacy_fp", checked).apply();
+                    refreshPrivacyInjection();
+                });
+        sheetNote(list, privateDnsSummary());
+        sheetButtonRow(list, "清空隐私统计", color(R.color.primary), () -> {
+            PrivacyStats.reset();
+            dialog.dismiss();
+            toast("已清空隐私统计");
+        });
+        sheetButtonRow(list, "反跟踪订阅与规则", color(R.color.primary), () -> {
+            dialog.dismiss();
+            openUrl("v://log", false);
+        });
+        dialog.show();
+    }
+
+    private void refreshPrivacyInjection() {
+        for (Tab tab : tabs) {
+            if (tab.web != null) {
+                Injection.install(tab.web, this);
+            }
+        }
+        WebView web = currentWeb();
+        if (web != null) {
+            web.reload();
+        }
+    }
+
+    private String privateDnsSummary() {
+        if (Build.VERSION.SDK_INT < 28) {
+            return "系统 Private DNS：当前系统版本不支持";
+        }
+        try {
+            android.net.ConnectivityManager cm =
+                    (android.net.ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+            android.net.LinkProperties lp = cm == null || cm.getActiveNetwork() == null
+                    ? null : cm.getLinkProperties(cm.getActiveNetwork());
+            if (lp == null) {
+                return "系统 Private DNS：无活动网络";
+            }
+            String name = lp.getPrivateDnsServerName();
+            return "系统 Private DNS：" + (lp.isPrivateDnsActive()
+                    ? (name == null ? "已启用（自动）" : "已启用 · " + name)
+                    : "未启用（跟随系统设置）");
+        } catch (Throwable t) {
+            return "系统 Private DNS：无法读取";
+        }
     }
 
     private void addShortcut() {
@@ -2985,6 +3208,12 @@ public class BrowserActivity extends AppCompatActivity {
         list.setPadding(dp(8), dp(8), dp(8), dp(20));
         if (Glass.enabled()) {
             android.graphics.drawable.GradientDrawable bg = Glass.panel(this, 24);
+            if (!Glass.solid()) {
+                // sheet 内容密集，玻璃本体保持半透明会让背景文字与正文互相干扰，
+                // 这里用接近不透明的同色底，边框仍沿用玻璃描边。
+                int fill = Glass.night(this) ? 0xF2181F20 : 0xF2FCFDFD;
+                bg.setColors(new int[]{fill, fill});
+            }
             bg.setCornerRadii(new float[]{
                     dp(26), dp(26), dp(26), dp(26), 0, 0, 0, 0});
             list.setBackground(bg);
@@ -3106,6 +3335,17 @@ public class BrowserActivity extends AppCompatActivity {
         button.setPadding(dp(16), dp(12), dp(16), dp(12));
         button.setOnClickListener(v -> action.run());
         list.addView(button, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+    }
+
+    private void sheetNote(LinearLayout list, String text) {
+        TextView note = new TextView(this);
+        note.setText(text);
+        note.setTextSize(13);
+        note.setTextColor(color(R.color.on_surface_variant));
+        note.setLineSpacing(0, 1.3f);
+        note.setPadding(dp(18), dp(10), dp(18), dp(6));
+        list.addView(note, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
     }
 
@@ -4010,23 +4250,34 @@ public class BrowserActivity extends AppCompatActivity {
             }
             sslDialogShowing = true;
             String fingerprint = SslExceptionStore.fingerprint(error);
-            String shortFingerprint = fingerprint.length() > 32
-                    ? fingerprint.substring(0, 32) + "…" : fingerprint;
-            String message = "站点：" + (host.isEmpty() ? "未知" : host) + "\n"
-                    + "问题：" + SslExceptionStore.errorName(error.getPrimaryError()) + "\n"
-                    + "证书 SHA-256：\n" + (shortFingerprint.isEmpty() ? "无法读取" : shortFingerprint)
-                    + "\n\n继续访问可能导致密码或数据被窃取。本次放行只在当前会话对相同证书生效。";
-            new MaterialAlertDialogBuilder(BrowserActivity.this)
-                    .setTitle("安全警告")
-                    .setMessage(message)
-                    .setPositiveButton("返回", (d, w) -> handler.cancel())
-                    .setNegativeButton("仍要继续", (d, w) -> {
-                        SslExceptionStore.remember(host, error, incognito);
-                        handler.proceed();
-                    })
-                    .setCancelable(false)
-                    .setOnDismissListener(d -> sslDialogShowing = false)
-                    .show();
+            String shown = fingerprint.isEmpty() ? "无法读取"
+                    : fingerprint.length() > 48 ? fingerprint.substring(0, 48) + "…" : fingerprint;
+            final boolean[] answered = {false};
+            final BottomSheetDialog sheet = newSheet();
+            LinearLayout list = listOf(sheet);
+            sheetTitle(list, "安全警告", host.isEmpty() ? "无法验证此网站的身份" : host);
+            sheetNote(list, "问题：" + SslExceptionStore.errorName(error.getPrimaryError())
+                    + "\n证书 SHA-256：" + shown
+                    + "\n\n继续访问可能导致密码或数据被窃取。放行仅在当前会话对相同证书生效。");
+            sheetButtonRow(list, "返回（推荐）", color(R.color.primary), () -> {
+                answered[0] = true;
+                sheet.dismiss();
+                handler.cancel();
+            });
+            sheetButtonRow(list, "仍要继续", color(R.color.error), () -> {
+                answered[0] = true;
+                sheet.dismiss();
+                SslExceptionStore.remember(host, error, incognito);
+                handler.proceed();
+            });
+            sheet.setCancelable(false);
+            sheet.setOnDismissListener(d -> {
+                sslDialogShowing = false;
+                if (!answered[0]) {
+                    handler.cancel();
+                }
+            });
+            sheet.show();
         }
 
         @Override
@@ -4160,27 +4411,38 @@ public class BrowserActivity extends AppCompatActivity {
                 callback.invoke(origin, false, false);
                 return;
             }
-            new MaterialAlertDialogBuilder(BrowserActivity.this)
-                    .setTitle("位置权限")
-                    .setMessage(host + " 想要获取你的位置。")
-                    .setPositiveButton("仅本次", (d, w) -> {
-                        recordSitePermission(hostView, host, "geolocation", "once");
-                        grantLocation(origin, callback, null);
-                    })
-                    .setNeutralButton("始终允许", (d, w) -> {
-                        recordSitePermission(hostView, host, "geolocation", "allow");
-                        grantLocation(origin, callback,
-                                () -> PermissionStore.set(BrowserActivity.this,
-                                        "geolocation", host, PermissionStore.ALLOW));
-                    })
-                    .setNegativeButton("拒绝", (d, w) -> {
-                        recordSitePermission(hostView, host, "geolocation", "deny");
-                        PermissionStore.set(BrowserActivity.this, "geolocation", host,
-                                PermissionStore.DENY);
-                        callback.invoke(origin, false, false);
-                    })
-                    .setOnCancelListener(d -> callback.invoke(origin, false, false))
-                    .show();
+            final boolean[] answered = {false};
+            final BottomSheetDialog sheet = newSheet();
+            LinearLayout list = listOf(sheet);
+            sheetTitle(list, "位置权限", host + " 想要获取你的位置");
+            sheetButtonRow(list, "仅本次", color(R.color.primary), () -> {
+                answered[0] = true;
+                sheet.dismiss();
+                recordSitePermission(hostView, host, "geolocation", "once");
+                grantLocation(origin, callback, null);
+            });
+            sheetButtonRow(list, "始终允许", color(R.color.primary), () -> {
+                answered[0] = true;
+                sheet.dismiss();
+                recordSitePermission(hostView, host, "geolocation", "allow");
+                grantLocation(origin, callback,
+                        () -> PermissionStore.set(BrowserActivity.this,
+                                "geolocation", host, PermissionStore.ALLOW));
+            });
+            sheetButtonRow(list, "拒绝", color(R.color.error), () -> {
+                answered[0] = true;
+                sheet.dismiss();
+                recordSitePermission(hostView, host, "geolocation", "deny");
+                PermissionStore.set(BrowserActivity.this, "geolocation", host,
+                        PermissionStore.DENY);
+                callback.invoke(origin, false, false);
+            });
+            sheet.setOnDismissListener(d -> {
+                if (!answered[0]) {
+                    callback.invoke(origin, false, false);
+                }
+            });
+            sheet.show();
         }
 
         @Override
@@ -4256,26 +4518,37 @@ public class BrowserActivity extends AppCompatActivity {
                 return;
             }
             String label = video && audio ? "相机和麦克风" : video ? "相机" : "麦克风";
-            new MaterialAlertDialogBuilder(BrowserActivity.this)
-                    .setTitle(label + "权限")
-                    .setMessage(host + " 想要使用你的" + label + "。")
-                    .setPositiveButton("仅本次", (d, w) -> {
-                        recordSitePermission(hostView, host, type, "once");
-                        grantMediaPermission(request, host, type, wantsVideo, wantsAudio, null);
-                    })
-                    .setNeutralButton("始终允许", (d, w) -> {
-                        recordSitePermission(hostView, host, type, "allow");
-                        grantMediaPermission(request, host, type, wantsVideo, wantsAudio,
-                                () -> PermissionStore.set(BrowserActivity.this, type, host,
-                                        PermissionStore.ALLOW));
-                    })
-                    .setNegativeButton("拒绝", (d, w) -> {
-                        recordSitePermission(hostView, host, type, "deny");
-                        PermissionStore.set(BrowserActivity.this, type, host, PermissionStore.DENY);
-                        denyPermissionRequest(request);
-                    })
-                    .setOnCancelListener(d -> denyPermissionRequest(request))
-                    .show();
+            final boolean[] answered = {false};
+            final BottomSheetDialog sheet = newSheet();
+            LinearLayout list = listOf(sheet);
+            sheetTitle(list, label + "权限", host + " 想要使用你的" + label);
+            sheetButtonRow(list, "仅本次", color(R.color.primary), () -> {
+                answered[0] = true;
+                sheet.dismiss();
+                recordSitePermission(hostView, host, type, "once");
+                grantMediaPermission(request, host, type, wantsVideo, wantsAudio, null);
+            });
+            sheetButtonRow(list, "始终允许", color(R.color.primary), () -> {
+                answered[0] = true;
+                sheet.dismiss();
+                recordSitePermission(hostView, host, type, "allow");
+                grantMediaPermission(request, host, type, wantsVideo, wantsAudio,
+                        () -> PermissionStore.set(BrowserActivity.this, type, host,
+                                PermissionStore.ALLOW));
+            });
+            sheetButtonRow(list, "拒绝", color(R.color.error), () -> {
+                answered[0] = true;
+                sheet.dismiss();
+                recordSitePermission(hostView, host, type, "deny");
+                PermissionStore.set(BrowserActivity.this, type, host, PermissionStore.DENY);
+                denyPermissionRequest(request);
+            });
+            sheet.setOnDismissListener(d -> {
+                if (!answered[0]) {
+                    denyPermissionRequest(request);
+                }
+            });
+            sheet.show();
         }
     }
 

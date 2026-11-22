@@ -75,6 +75,7 @@ public final class MenuDefs {
             new Item("mark_ad", "标记广告", R.drawable.ic_edit, true),
             new Item("font", "字体大小", R.drawable.ic_font, true),
             new Item("report", "举报网站", R.drawable.ic_report, true),
+            new Item("privacy", "隐私报告", R.drawable.ic_shield_check, false),
             new Item(CUSTOMIZE_ID, "定制菜单", R.drawable.ic_tune, false)
     };
 

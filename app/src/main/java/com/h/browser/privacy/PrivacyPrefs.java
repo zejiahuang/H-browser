@@ -130,7 +130,14 @@ public final class PrivacyPrefs {
     }
 
     public static String proxyPass() {
-        return Prefs.get().getString("proxy_pass", "");
+        String stored = Prefs.get().getString("proxy_pass", "");
+        if (stored == null || stored.isEmpty()) {
+            return "";
+        }
+        if (stored.startsWith("gcm:") || stored.startsWith("b64:")) {
+            return com.h.browser.data.SecurePrefs.decrypt(stored);
+        }
+        return stored;
     }
 
     public static boolean proxyEnabled() {
@@ -144,7 +151,7 @@ public final class PrivacyPrefs {
                 .putString("proxy_host", host == null ? "" : host)
                 .putInt("proxy_port", Math.max(0, port))
                 .putString("proxy_user", user == null ? "" : user)
-                .putString("proxy_pass", pass == null ? "" : pass)
+                .putString("proxy_pass", com.h.browser.data.SecurePrefs.encrypt(pass))
                 .apply();
     }
 
