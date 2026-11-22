@@ -3,6 +3,8 @@ package com.h.browser.ui;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
@@ -18,6 +20,7 @@ import android.webkit.CookieManager;
 import android.webkit.WebView;
 import android.widget.EditText;
 import android.widget.FrameLayout;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
@@ -26,11 +29,14 @@ import android.widget.Toast;
 
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.app.AppCompatDelegate;
+import androidx.appcompat.widget.SwitchCompat;
 
 import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 import com.h.browser.R;
 import com.h.browser.adblock.AdBlock;
+import com.h.browser.adblock.Subscriptions;
 import com.h.browser.ai.AiChatActivity;
+import com.h.browser.core.BrowserActivity;
 import com.h.browser.data.Backup;
 import com.h.browser.data.Prefs;
 import com.h.browser.download.DownloadActivity;
@@ -40,8 +46,12 @@ import com.h.browser.userscript.UserScripts;
 import com.h.browser.vault.VaultActivity;
 import com.h.browser.widget.BaseSearchWidget;
 
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
@@ -55,6 +65,8 @@ public class SettingsActivity extends AppCompatActivity {
     private static final int REQ_IMPORT_BM = 3001;
     private static final int REQ_EXPORT_BM = 3002;
     private static final int REQ_EXPORT_HISTORY = 3003;
+    private static final int REQ_IMPORT_RULES = 3004;
+    private static final int REQ_HOME_BG = 3005;
 
     private static final String[][] CATEGORIES = {
             {"general", "通用", "搜索引擎 主页 浏览器标识 字体 下载 嗅探 书签 历史 小组件 无痕 语言 同步 AI 屏幕方向 操作设定"},
@@ -514,10 +526,12 @@ public class SettingsActivity extends AppCompatActivity {
     }
 
     private void buildPrivacy() {
-        switchFlat("不跟踪", null,
-                pref("dnt", true), value -> setPref("dnt", value));
-        switchFlat("禁用 WebRTC", null,
-                pref("no_webrtc"), value -> setPref("no_webrtc", value));
+        switchFlat("不跟踪", "发送 DNT / GPC 隐私信号",
+                com.h.browser.privacy.PrivacyPrefs.dnt(),
+                value -> com.h.browser.privacy.PrivacyPrefs.setDnt(value));
+        switchFlat("禁用 WebRTC", "阻止网页通过 WebRTC 获取真实 IP",
+                com.h.browser.privacy.PrivacyPrefs.blockWebRtc(),
+                value -> com.h.browser.privacy.PrivacyPrefs.setBlockWebRtc(value));
         switchFlat("不出售或分享数据",
                 "请求网站不出售或分享我的数据以保护隐私（实验性）",
                 pref("no_sell"), value -> setPref("no_sell", value));
@@ -531,23 +545,17 @@ public class SettingsActivity extends AppCompatActivity {
                 pref("data_saver"), value -> setPref("data_saver", value));
         switchFlat("自动展示嗅探按钮", null,
                 pref("auto_sniff"), value -> setPref("auto_sniff", value));
-        switchFlat("允许调试网页", null,
-                pref("debug_web"), value -> {
-                    setPref("debug_web", value);
-                    if (android.os.Build.VERSION.SDK_INT >= 19) {
+        if (com.h.browser.BuildConfig.DEBUG) {
+            switchFlat("允许调试网页", null,
+                    pref("debug_web"), value -> {
+                        setPref("debug_web", value);
                         WebView.setWebContentsDebuggingEnabled(value);
-                    }
-                });
+                    });
+        }
         switchFlat("禁用预测返回手势", null,
                 pref("no_predictive"), value -> setPref("no_predictive", value));
         switchFlat("禁用 Custom Tabs", "跳过第三方应用通过 Custom Tabs 打开链接时的中转页",
                 pref("no_custom_tabs"), value -> setPref("no_custom_tabs", value));
-        switchFlat("禁用安全浏览",
-                "安全浏览允许 WebView 通过验证链接来防止恶意软件和网络钓鱼攻击",
-                pref("no_safe_browsing"), value -> setPref("no_safe_browsing", value));
-        switchFlat("忽略 SSL 证书警告",
-                "请小心，忽略 SSL 证书警告可能会使网站的连接不安全",
-                pref("ignore_ssl"), value -> setPref("ignore_ssl", value));
     }
 
     private void buildScripts() {
@@ -622,42 +630,82 @@ public class SettingsActivity extends AppCompatActivity {
     private void buildDesigner() {
         root.setBackgroundColor(0xFF222222);
         content.setPadding(0, 0, 0, 0);
-        LinearLayout preview = new LinearLayout(this);
-        preview.setOrientation(LinearLayout.VERTICAL);
-        preview.setGravity(Gravity.CENTER_HORIZONTAL);
-        preview.setPadding(0, Ui.dp(this, 190), 0, 0);
-        GradientDrawable bg = new GradientDrawable();
+        FrameLayout preview = new FrameLayout(this);
         int homeBg = Prefs.get().getInt("home_bg", 0);
+        GradientDrawable bg = new GradientDrawable();
         bg.setColor(homeBg != 0 ? homeBg : 0xFF000000);
         bg.setCornerRadius(Ui.dp(this, 24));
         bg.setStroke(Math.max(1, Ui.dp(this, 1)), 0x33FFFFFF);
         preview.setBackground(bg);
+        if (android.os.Build.VERSION.SDK_INT >= 21) {
+            preview.setClipToOutline(true);
+        }
+        File bgFile = new File(getFilesDir(), "home_bg.jpg");
+        if (bgFile.exists()) {
+            ImageView image = new ImageView(this);
+            image.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            Bitmap bitmap = decodeBounded(bgFile, 900);
+            if (bitmap != null) {
+                image.setImageBitmap(bitmap);
+            }
+            preview.addView(image, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            View scrim = new View(this);
+            scrim.setBackgroundColor(0xFF000000);
+            scrim.setAlpha(Prefs.homeBgDim() / 100f);
+            preview.addView(scrim, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        }
+        LinearLayout group = Ui.column(this);
+        group.setGravity(Gravity.CENTER_HORIZONTAL);
+        group.setPadding(0, Ui.dp(this, 190), 0, 0);
         HMarkView logo = new HMarkView(this);
-        logo.setScale(0.94f);
-        preview.addView(logo, new LinearLayout.LayoutParams(
+        logo.setScale(0.94f * Prefs.homeLogoScale() / 100f);
+        logo.setVisibility(Prefs.homeLogo() ? View.VISIBLE : View.GONE);
+        group.addView(logo, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         LinearLayout searchPill = new LinearLayout(this);
         searchPill.setOrientation(LinearLayout.HORIZONTAL);
         searchPill.setGravity(Gravity.CENTER_VERTICAL);
         searchPill.setPadding(Ui.dp(this, 16), 0, Ui.dp(this, 16), 0);
+        searchPill.setVisibility(Prefs.homeSearch() ? View.VISIBLE : View.GONE);
         GradientDrawable outline = new GradientDrawable();
         outline.setColor(Color.TRANSPARENT);
         outline.setStroke(Math.max(1, Ui.dp(this, 1)), 0xFF343434);
         outline.setCornerRadius(Ui.dp(this, 23));
         searchPill.setBackground(outline);
-        TextView pillHint = Ui.text(this, "搜索或输入网址", 13, R.color.on_surface_variant);
+        TextView pillHint = Ui.text(this, Prefs.homeSearchHint(), 13, R.color.on_surface_variant);
         pillHint.setTextColor(0xFFDDDDDD);
         searchPill.addView(pillHint);
         LinearLayout.LayoutParams pillParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(this, 46));
         pillParams.setMargins(Ui.dp(this, 16), Ui.dp(this, 27), Ui.dp(this, 16), 0);
-        preview.addView(searchPill, pillParams);
+        group.addView(searchPill, pillParams);
+        preview.addView(group, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
         LinearLayout.LayoutParams previewParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(this, 600));
         previewParams.setMargins(Ui.dp(this, 11), Ui.dp(this, 15),
                 Ui.dp(this, 11), Ui.dp(this, 17));
         content.addView(preview, previewParams);
+    }
+
+    private Bitmap decodeBounded(File file, int max) {
+        try {
+            BitmapFactory.Options bounds = new BitmapFactory.Options();
+            bounds.inJustDecodeBounds = true;
+            BitmapFactory.decodeFile(file.getAbsolutePath(), bounds);
+            int sample = 1;
+            while (Math.max(bounds.outWidth, bounds.outHeight) / sample > max) {
+                sample *= 2;
+            }
+            BitmapFactory.Options options = new BitmapFactory.Options();
+            options.inSampleSize = sample;
+            return BitmapFactory.decodeFile(file.getAbsolutePath(), options);
+        } catch (Throwable t) {
+            return null;
+        }
     }
 
     private LinearLayout buildDesignerTabs() {
@@ -667,16 +715,12 @@ public class SettingsActivity extends AppCompatActivity {
         bg.setCornerRadii(new float[]{Ui.dp(this, 14), Ui.dp(this, 14),
                 Ui.dp(this, 14), Ui.dp(this, 14), 0, 0, 0, 0});
         tabs.setBackground(bg);
-        String[] labels = {"Logo", "搜索框", "背景", "收藏", "高级"};
+        String[] labels = {"Logo", "搜索", "背景", "更多"};
         Runnable[] actions = {
                 this::designerLogo,
-                () -> inputDialog("搜索引擎（用 %s 代表关键词）",
-                        Prefs.searchEngine(), Prefs::setSearchEngine),
+                this::designerSearch,
                 this::backgroundDialog,
-                () -> info("主页收藏", "主页收藏以快捷方式显示在搜索框下方，"
-                        + "可在书签页长按设置。"),
-                () -> startActivity(new Intent(this, SettingsActivity.class)
-                        .putExtra("cat", "experimental"))
+                this::designerMore
         };
         for (int i = 0; i < labels.length; i++) {
             final int index = i;
@@ -692,7 +736,199 @@ public class SettingsActivity extends AppCompatActivity {
     }
 
     private void designerLogo() {
-        info("Logo", "主页搜索框上方固定显示“H”标识。");
+        LinearLayout wrapper = Ui.column(this);
+        int pad = Ui.dp(this, 20);
+        wrapper.setPadding(pad, Ui.dp(this, 8), pad, 0);
+        LinearLayout switchRow = Ui.row(this);
+        switchRow.addView(Ui.text(this, "显示 H 标识", 16, R.color.on_surface),
+                new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        final SwitchCompat show = new SwitchCompat(this);
+        show.setChecked(Prefs.homeLogo());
+        switchRow.addView(show);
+        wrapper.addView(switchRow);
+        final TextView value = Ui.text(this, Prefs.homeLogoScale() + "%", 14,
+                R.color.on_surface_variant);
+        LinearLayout.LayoutParams valueParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        valueParams.topMargin = Ui.dp(this, 14);
+        wrapper.addView(value, valueParams);
+        final SeekBar seek = new SeekBar(this);
+        seek.setMax(80);
+        seek.setProgress(Math.max(0, Math.min(80, Prefs.homeLogoScale() - 60)));
+        seek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                value.setText((progress + 60) + "%");
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar seekBar) {
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar seekBar) {
+            }
+        });
+        wrapper.addView(seek);
+        new MaterialAlertDialogBuilder(this)
+                .setTitle("主页 Logo")
+                .setView(wrapper)
+                .setPositiveButton("保存", (d, w) -> {
+                    Prefs.setHomeLogo(show.isChecked());
+                    Prefs.setHomeLogoScale(seek.getProgress() + 60);
+                    buildDesignerRefresh();
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void designerSearch() {
+        final String[] items = {
+                "搜索框提示语",
+                Prefs.homeSearch() ? "隐藏搜索框" : "显示搜索框",
+                "搜索引擎"
+        };
+        new MaterialAlertDialogBuilder(this).setTitle("搜索框")
+                .setItems(items, (d, which) -> {
+                    switch (which) {
+                        case 0:
+                            homeHintDialog();
+                            break;
+                        case 1:
+                            Prefs.setHomeSearch(!Prefs.homeSearch());
+                            buildDesignerRefresh();
+                            break;
+                        default:
+                            searchEngineDialog();
+                            break;
+                    }
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void homeHintDialog() {
+        final EditText input = Ui.input(this, "搜索框提示语");
+        input.setText(Prefs.homeSearchHint());
+        input.setSingleLine(true);
+        input.setInputType(InputType.TYPE_CLASS_TEXT);
+        int pad = Ui.dp(this, 20);
+        LinearLayout wrapper = new LinearLayout(this);
+        wrapper.setPadding(pad, Ui.dp(this, 8), pad, 0);
+        wrapper.addView(input);
+        new MaterialAlertDialogBuilder(this).setTitle("搜索框提示语")
+                .setView(wrapper)
+                .setPositiveButton("保存", (d, w) -> {
+                    Prefs.setHomeSearchHint(input.getText().toString());
+                    buildDesignerRefresh();
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void searchEngineDialog() {
+        final String[][] engines = {
+                {"百度", "https://www.baidu.com/s?wd=%s"},
+                {"Bing", "https://www.bing.com/search?q=%s"},
+                {"Google", "https://www.google.com/search?q=%s"},
+                {"搜狗", "https://www.sogou.com/web?query=%s"},
+                {"360", "https://www.so.com/s?q=%s"},
+                {"DuckDuckGo", "https://duckduckgo.com/?q=%s"}
+        };
+        String[] labels = new String[engines.length + 1];
+        int checked = -1;
+        for (int i = 0; i < engines.length; i++) {
+            labels[i] = engines[i][0];
+            if (engines[i][1].equals(Prefs.searchEngine())) {
+                checked = i;
+            }
+        }
+        labels[engines.length] = "自定义模板…";
+        new MaterialAlertDialogBuilder(this).setTitle("默认搜索引擎")
+                .setSingleChoiceItems(labels, checked, (dialog, which) -> {
+                    dialog.dismiss();
+                    if (which == engines.length) {
+                        inputDialog("搜索引擎（用 %s 代表关键词）",
+                                Prefs.searchEngine(), Prefs::setSearchEngine);
+                    } else {
+                        Prefs.setSearchEngine(engines[which][1]);
+                        toast("已切换为" + engines[which][0]);
+                        buildDesignerRefresh();
+                    }
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void buildDesignerRefresh() {
+        buildCategory("custom");
+    }
+
+    private void designerMore() {
+        final String[] items = {
+                "主题模式",
+                "网页深色：" + (Prefs.webDark() ? "开" : "关"),
+                "地址栏显示：" + addressStyleName(Prefs.addressStyle()),
+                "底栏自动隐藏：" + (Prefs.barAutoHide() ? "开" : "关"),
+                "工具栏设置",
+                "定制菜单",
+                "材质与玻璃"
+        };
+        new MaterialAlertDialogBuilder(this).setTitle("更多外观")
+                .setItems(items, (d, which) -> {
+                    switch (which) {
+                        case 0:
+                            themeDialog();
+                            break;
+                        case 1:
+                            boolean dark = !Prefs.webDark();
+                            Prefs.get().edit().putBoolean("web_dark", dark).apply();
+                            toast(dark ? "网页深色已开启" : "网页深色已关闭");
+                            buildDesignerRefresh();
+                            break;
+                        case 2:
+                            addressStyleDialog();
+                            break;
+                        case 3:
+                            boolean auto = !Prefs.barAutoHide();
+                            Prefs.get().edit().putBoolean("bar_autohide", auto).apply();
+                            toast(auto ? "底栏将随滚动隐藏" : "底栏始终显示");
+                            buildDesignerRefresh();
+                            break;
+                        case 4:
+                            toolbarDialog();
+                            break;
+                        case 5:
+                            MenuDefs.showEditor(this, null);
+                            break;
+                        default:
+                            startActivity(new Intent(this, SettingsActivity.class)
+                                    .putExtra("cat", "experimental"));
+                            break;
+                    }
+                })
+                .setNegativeButton("关闭", null)
+                .show();
+    }
+
+    private String addressStyleName(int style) {
+        if (style == 0) {
+            return "网页标题";
+        }
+        return style == 2 ? "完整地址" : "主域名";
+    }
+
+    private void addressStyleDialog() {
+        new MaterialAlertDialogBuilder(this).setTitle("地址栏显示")
+                .setSingleChoiceItems(new String[]{"网页标题", "主域名", "完整地址"},
+                        Prefs.addressStyle(), (dialog, which) -> {
+                            dialog.dismiss();
+                            Prefs.get().edit().putInt("address_style", which).apply();
+                            toast("地址栏已更新");
+                            buildDesignerRefresh();
+                        })
+                .setNegativeButton("取消", null)
+                .show();
     }
 
     private void backgroundDialog() {
@@ -701,17 +937,109 @@ public class SettingsActivity extends AppCompatActivity {
         int current = Prefs.get().getInt("home_bg", 0);
         int checked = 0;
         for (int i = 0; i < colors.length; i++) {
-            if (colors[i] == current) checked = i;
+            if (colors[i] == current) {
+                checked = i;
+            }
         }
-        new MaterialAlertDialogBuilder(this).setTitle("主页背景")
+        File bgFile = new File(getFilesDir(), "home_bg.jpg");
+        MaterialAlertDialogBuilder builder = new MaterialAlertDialogBuilder(this)
+                .setTitle("主页背景")
+                .setMessage(bgFile.exists()
+                        ? "图片背景使用中；选择纯色或清除图片可恢复纯色背景。"
+                        : "选择纯色背景，或从相册选择一张图片（自动压缩）。")
                 .setSingleChoiceItems(labels, checked, (dialog, which) -> {
                     dialog.dismiss();
                     Prefs.get().edit().putInt("home_bg", colors[which]).apply();
-                    buildCategory("custom");
+                    buildDesignerRefresh();
                     toast("主页背景已更新");
                 })
-                .setNegativeButton("取消", null)
-                .show();
+                .setPositiveButton("选择图片", (d, w) -> pickHomeBackground())
+                .setNegativeButton("取消", null);
+        if (bgFile.exists()) {
+            builder.setNeutralButton("清除图片", (d, w) -> {
+                if (bgFile.delete()) {
+                    bumpHomeBgVersion();
+                    buildDesignerRefresh();
+                    toast("已清除图片背景");
+                } else {
+                    toast("清除失败");
+                }
+            });
+        }
+        builder.show();
+    }
+
+    private void pickHomeBackground() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("image/*");
+        try {
+            startActivityForResult(intent, REQ_HOME_BG);
+        } catch (Throwable t) {
+            toast("无法打开图片选择器");
+        }
+    }
+
+    private void bumpHomeBgVersion() {
+        int version = Prefs.get().getInt("home_bg_version", 0) + 1;
+        Prefs.get().edit().putInt("home_bg_version", version).apply();
+    }
+
+    private void saveHomeBackground(final Uri uri) {
+        new Thread(() -> {
+            try {
+                BitmapFactory.Options bounds = new BitmapFactory.Options();
+                bounds.inJustDecodeBounds = true;
+                try (InputStream in = getContentResolver().openInputStream(uri)) {
+                    BitmapFactory.decodeStream(in, null, bounds);
+                }
+                int sample = 1;
+                while (Math.max(bounds.outWidth, bounds.outHeight) / sample > 1440) {
+                    sample *= 2;
+                }
+                BitmapFactory.Options options = new BitmapFactory.Options();
+                options.inSampleSize = sample;
+                Bitmap bitmap;
+                try (InputStream in = getContentResolver().openInputStream(uri)) {
+                    bitmap = BitmapFactory.decodeStream(in, null, options);
+                }
+                if (bitmap == null) {
+                    throw new IllegalStateException("无法读取图片");
+                }
+                int max = Math.max(bitmap.getWidth(), bitmap.getHeight());
+                if (max > 1440) {
+                    float scale = 1440f / max;
+                    Bitmap scaled = Bitmap.createScaledBitmap(bitmap,
+                            Math.max(1, Math.round(bitmap.getWidth() * scale)),
+                            Math.max(1, Math.round(bitmap.getHeight() * scale)), true);
+                    if (scaled != bitmap) {
+                        bitmap.recycle();
+                        bitmap = scaled;
+                    }
+                }
+                File target = new File(getFilesDir(), "home_bg.jpg");
+                File tmp = new File(getFilesDir(), "home_bg.tmp");
+                try (FileOutputStream out = new FileOutputStream(tmp)) {
+                    bitmap.compress(Bitmap.CompressFormat.JPEG, 88, out);
+                }
+                bitmap.recycle();
+                if (!tmp.renameTo(target)) {
+                    if (target.exists() && !target.delete()) {
+                        throw new IllegalStateException("无法覆盖背景");
+                    }
+                    if (!tmp.renameTo(target)) {
+                        throw new IllegalStateException("无法保存背景");
+                    }
+                }
+                bumpHomeBgVersion();
+                runOnUiThread(() -> {
+                    buildDesignerRefresh();
+                    toast("主页背景已更新");
+                });
+            } catch (Throwable t) {
+                runOnUiThread(() -> toast("设置背景失败"));
+            }
+        }, "home-bg-save").start();
     }
 
     private void flat(String title, String summary, View right, Runnable action) {
@@ -799,24 +1127,208 @@ public class SettingsActivity extends AppCompatActivity {
 
     private void adblockDialog() {
         boolean enabled = Prefs.adblockEnabled();
+        String[] items = {
+                enabled ? "关闭广告拦截" : "开启广告拦截",
+                "更新全部订阅",
+                "订阅规则",
+                "我的规则",
+                "站点例外",
+                "查看拦截日志"
+        };
         new MaterialAlertDialogBuilder(this).setTitle("广告拦截")
-                .setMessage((enabled ? "已启用" : "已关闭") + " · 主机规则 "
+                .setMessage((enabled ? "已启用" : "已关闭") + " · 规则 "
                         + AdBlock.ruleCount() + " 条 · 已拦截 "
-                        + AdBlock.blockedCount() + " 次")
-                .setPositiveButton("更新规则", (d, w) -> {
-                    toast("开始更新…");
-                    AdBlock.updateSubscription(this, Prefs.adblockSubscription(), (ok, message) ->
-                            runOnUiThread(() -> {
+                        + AdBlock.blockedCount() + " 次\n"
+                        + AdBlock.statsSummary())
+                .setItems(items, (d, which) -> {
+                    switch (which) {
+                        case 0:
+                            Prefs.setAdblockEnabled(!enabled);
+                            AdBlock.init(this);
+                            buildCategory("general");
+                            break;
+                        case 1:
+                            toast("开始更新全部订阅…");
+                            AdBlock.updateAll(this, (ok, message) -> runOnUiThread(() -> {
                                 toast(message);
                                 buildCategory("general");
                             }));
+                            break;
+                        case 2:
+                            subscriptionsDialog();
+                            break;
+                        case 3:
+                            userRulesDialog();
+                            break;
+                        case 4:
+                            siteExceptionsDialog();
+                            break;
+                        default:
+                            startActivity(new Intent(this, BrowserActivity.class)
+                                    .setAction(Intent.ACTION_VIEW)
+                                    .setData(Uri.parse("v://log")));
+                            break;
+                    }
                 })
-                .setNeutralButton(enabled ? "关闭" : "开启", (d, w) -> {
-                    Prefs.setAdblockEnabled(!enabled);
-                    AdBlock.init(this);
-                    buildCategory("general");
+                .setNegativeButton("关闭", null)
+                .show();
+    }
+
+    private void subscriptionsDialog() {
+        List<Subscriptions.Sub> subs = Subscriptions.list(this);
+        String[] labels = new String[subs.size()];
+        for (int i = 0; i < subs.size(); i++) {
+            Subscriptions.Sub sub = subs.get(i);
+            labels[i] = (sub.enabled ? "✓ " : "· ") + sub.name
+                    + (sub.rules > 0 ? "  " + sub.rules + " 条" : "");
+        }
+        new MaterialAlertDialogBuilder(this).setTitle("订阅规则")
+                .setMessage("内置基础规则始终启用。点击订阅可启停、更新或删除。")
+                .setItems(labels, (d, which) -> subscriptionOptions(subs.get(which)))
+                .setPositiveButton("添加订阅", (d, w) -> addSubscriptionDialog())
+                .setNeutralButton("全部更新", (d, w) -> {
+                    toast("开始更新全部订阅…");
+                    AdBlock.updateAll(this, (ok, message) ->
+                            runOnUiThread(() -> toast(message)));
+                })
+                .setNegativeButton("关闭", null)
+                .show();
+    }
+
+    private void subscriptionOptions(Subscriptions.Sub sub) {
+        List<String> actions = new ArrayList<>();
+        actions.add(sub.enabled ? "停用" : "启用");
+        actions.add("立即更新");
+        if (!sub.builtin) {
+            actions.add("删除");
+        }
+        new MaterialAlertDialogBuilder(this).setTitle(sub.name)
+                .setMessage(sub.url + (sub.error == null || sub.error.isEmpty()
+                        ? "" : "\n错误：" + sub.error))
+                .setItems(actions.toArray(new String[0]), (d, which) -> {
+                    if (which == 0) {
+                        final boolean enable = !sub.enabled;
+                        new Thread(() -> {
+                            Subscriptions.setEnabled(SettingsActivity.this, sub.id, enable);
+                            Subscriptions.refresh(SettingsActivity.this);
+                            runOnUiThread(() -> {
+                                toast(enable ? "已启用" : "已停用");
+                                subscriptionsDialog();
+                            });
+                        }).start();
+                    } else if (which == 1) {
+                        toast("开始更新…");
+                        Subscriptions.updateOne(this, sub.id, (ok, message) ->
+                                runOnUiThread(() -> {
+                                    toast(message);
+                                    subscriptionsDialog();
+                                }));
+                    } else {
+                        new MaterialAlertDialogBuilder(this).setTitle("删除订阅")
+                                .setMessage("删除 " + sub.name + " 的已下载规则？")
+                                .setPositiveButton("删除", (d2, w2) -> {
+                                    new Thread(() -> {
+                                        Subscriptions.remove(SettingsActivity.this, sub.id);
+                                        runOnUiThread(() -> {
+                                            toast("已删除");
+                                            subscriptionsDialog();
+                                        });
+                                    }).start();
+                                })
+                                .setNegativeButton("取消", null)
+                                .show();
+                    }
+                })
+                .setNegativeButton("关闭", null)
+                .show();
+    }
+
+    private void addSubscriptionDialog() {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        int pad = Ui.dp(this, 20);
+        box.setPadding(pad, Ui.dp(this, 8), pad, 0);
+        EditText name = new EditText(this);
+        name.setHint("名称（可留空）");
+        name.setSingleLine(true);
+        EditText url = new EditText(this);
+        url.setHint("规则地址（http/https）");
+        url.setSingleLine(true);
+        url.setInputType(InputType.TYPE_TEXT_VARIATION_URI);
+        box.addView(name);
+        box.addView(url);
+        new MaterialAlertDialogBuilder(this).setTitle("添加订阅")
+                .setView(box)
+                .setPositiveButton("添加", (d, w) -> {
+                    Subscriptions.Sub sub = Subscriptions.addCustom(this,
+                            name.getText().toString(), url.getText().toString());
+                    if (sub == null) {
+                        toast("地址无效");
+                        return;
+                    }
+                    toast("已添加，开始下载…");
+                    Subscriptions.updateOne(this, sub.id, (ok, message) ->
+                            runOnUiThread(() -> toast(message)));
+                })
+                .setNeutralButton("从文件导入", (d, w) -> {
+                    Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                    intent.addCategory(Intent.CATEGORY_OPENABLE);
+                    intent.setType("text/*");
+                    try {
+                        startActivityForResult(intent, REQ_IMPORT_RULES);
+                    } catch (Throwable t) {
+                        toast("没有可用的文件选择器");
+                    }
                 })
                 .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void userRulesDialog() {
+        List<String> rules = AdBlock.userRules(this);
+        if (rules.isEmpty()) {
+            toast("还没有自定义规则，可在网页菜单中“标记广告”");
+            return;
+        }
+        new MaterialAlertDialogBuilder(this).setTitle("我的规则")
+                .setMessage("点击规则可删除。共 " + rules.size() + " 条。")
+                .setItems(rules.toArray(new String[0]), (d, which) -> {
+                    String line = rules.get(which);
+                    new MaterialAlertDialogBuilder(this).setTitle("删除规则")
+                            .setMessage(line)
+                            .setPositiveButton("删除", (d2, w2) -> {
+                                AdBlock.removeUserRule(this, line);
+                                toast("已删除");
+                                userRulesDialog();
+                            })
+                            .setNegativeButton("取消", null)
+                            .show();
+                })
+                .setNegativeButton("关闭", null)
+                .show();
+    }
+
+    private void siteExceptionsDialog() {
+        List<String> hosts = new ArrayList<>();
+        Map<String, ?> all = getSharedPreferences("h_prefs", MODE_PRIVATE).getAll();
+        for (Map.Entry<String, ?> entry : all.entrySet()) {
+            if (entry.getKey().startsWith("site_ad_")
+                    && Boolean.FALSE.equals(entry.getValue())) {
+                hosts.add(entry.getKey().substring("site_ad_".length()));
+            }
+        }
+        if (hosts.isEmpty()) {
+            toast("没有站点例外");
+            return;
+        }
+        new MaterialAlertDialogBuilder(this).setTitle("站点例外")
+                .setMessage("这些站点已关闭广告拦截，点击可恢复。")
+                .setItems(hosts.toArray(new String[0]), (d, which) -> {
+                    Prefs.get().edit().remove("site_ad_" + hosts.get(which)).apply();
+                    toast("已恢复 " + hosts.get(which));
+                    siteExceptionsDialog();
+                })
+                .setNegativeButton("关闭", null)
                 .show();
     }
 
@@ -1150,6 +1662,13 @@ public class SettingsActivity extends AppCompatActivity {
         names.put("refresh", "刷新");
         names.put("tabs", "标签");
         names.put("newtab", "新标签");
+        names.put("bookmarks", "书签");
+        names.put("downloads", "下载");
+        names.put("share", "分享");
+        names.put("search", "搜索");
+        names.put("find", "页内查找");
+        names.put("settings", "设置");
+        names.put("ai", "AI");
         names.put("menu", "菜单");
         final List<String> order = new ArrayList<>();
         final List<String> saved = Arrays.asList(Prefs.toolbarItems().split(","));
@@ -1183,8 +1702,24 @@ public class SettingsActivity extends AppCompatActivity {
                 row.addView(Ui.text(this, names.get(id), 16, R.color.on_surface),
                         new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
                 row.addView(actionText(fixed ? "固定" : (hidden.contains(id) ? "隐藏" : "显示"), () -> {
-                    if (fixed) return;
-                    if (!hidden.remove(id)) hidden.add(id);
+                    if (fixed) {
+                        return;
+                    }
+                    if (hidden.contains(id)) {
+                        int visible = 0;
+                        for (String name : names.keySet()) {
+                            if (!hidden.contains(name)) {
+                                visible++;
+                            }
+                        }
+                        if (visible >= 8) {
+                            toast("最多显示 8 个按钮");
+                            return;
+                        }
+                        hidden.remove(id);
+                    } else {
+                        hidden.add(id);
+                    }
                     render[0].run();
                 }));
                 row.addView(actionText("↑", () -> {
@@ -1303,6 +1838,36 @@ public class SettingsActivity extends AppCompatActivity {
                     runOnUiThread(() -> toast("导出失败"));
                 }
             }).start();
+        } else if (requestCode == REQ_IMPORT_RULES) {
+            final String name = uri.getLastPathSegment() == null ? "导入规则"
+                    : uri.getLastPathSegment();
+            new Thread(() -> {
+                try (InputStream in = getContentResolver().openInputStream(uri)) {
+                    ByteArrayOutputStream out = new ByteArrayOutputStream();
+                    byte[] buffer = new byte[16384];
+                    int n;
+                    while ((n = in.read(buffer)) > 0) {
+                        if (out.size() + n > 8 * 1024 * 1024) {
+                            throw new IllegalStateException("文件超过 8MB");
+                        }
+                        out.write(buffer, 0, n);
+                    }
+                    String content = new String(out.toByteArray(), StandardCharsets.UTF_8);
+                    Subscriptions.Sub sub = Subscriptions.importRules(this, name, content);
+                    runOnUiThread(() -> {
+                        if (sub == null) {
+                            toast("规则文件为空");
+                        } else {
+                            toast("已导入 " + sub.rules + " 条规则");
+                            subscriptionsDialog();
+                        }
+                    });
+                } catch (Throwable t) {
+                    runOnUiThread(() -> toast("导入失败"));
+                }
+            }).start();
+        } else if (requestCode == REQ_HOME_BG) {
+            saveHomeBackground(uri);
         }
     }
 

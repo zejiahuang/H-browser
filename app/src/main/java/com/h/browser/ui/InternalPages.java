@@ -51,7 +51,7 @@ public final class InternalPages {
             case "history":
                 return wrap("历史", history(context));
             case "log":
-                return wrap("拦截日志", log());
+                return wrap("拦截日志", log(context));
             case "about":
                 return wrap("关于", about());
             case "home":
@@ -129,12 +129,17 @@ public final class InternalPages {
         return sb.toString();
     }
 
-    private static String log() {
+    private static String log(Context context) {
         StringBuilder sb = new StringBuilder();
-        sb.append("<div class=card><h2>统计</h2><div class=sub>已拦截 ").append(AdBlock.blockedCount())
-                .append(" 次 · 主机规则 ").append(AdBlock.ruleCount()).append(" 条</div>");
-        sb.append("<button onclick='HNative.updateAdblock()'>更新订阅</button> ")
-                .append("<button class=ghost onclick='HNative.clearLog();location.reload()'>清空</button></div>");
+        sb.append("<div class=card><h2>统计</h2><div class=sub style='white-space:pre-wrap'>")
+                .append(UrlUtils.escapeHtml(AdBlock.statsSummary())).append("</div>")
+                .append("<div class=sub>本次已拦截 ").append(AdBlock.blockedCount())
+                .append(" 次 · 我的规则 ").append(AdBlock.userRuleCount()).append(" 条</div>")
+                .append("<div class=sub style='white-space:pre-wrap'>")
+                .append(UrlUtils.escapeHtml(AdBlock.subscriptionSummary(context))).append("</div>");
+        sb.append("<button onclick='HNative.updateAdblock()'>更新全部订阅</button> ")
+                .append("<button class=ghost onclick='HNative.clearLog();location.reload()'>清空日志</button> ")
+                .append("<button class=ghost onclick='HNative.openSettings()'>规则管理</button></div>");
         List<String> logs = AdBlock.recentBlocks();
         if (logs.isEmpty()) {
             sb.append("<div class=sub>本次没有拦截记录。</div>");

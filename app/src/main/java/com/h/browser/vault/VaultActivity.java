@@ -1,11 +1,16 @@
 package com.h.browser.vault;
 
 import android.app.Activity;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Intent;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.text.InputType;
 import android.text.method.PasswordTransformationMethod;
 import android.view.ViewGroup;
+import android.view.WindowManager;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -27,11 +32,15 @@ public class VaultActivity extends AppCompatActivity {
 
     private LinearLayout content;
     private final List<VaultStore.Entry> entries = new ArrayList<>();
+    private final Handler handler = new Handler(Looper.getMainLooper());
     private boolean fillMode;
+    private boolean verified;
+    private boolean authenticating;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
         fillMode = getIntent().getBooleanExtra("fill", false);
         LinearLayout root = Ui.screen(this);
         root.addView(Ui.topBar(this, fillMode ? "选择账号" : "密码库"));
@@ -44,41 +53,57 @@ public class VaultActivity extends AppCompatActivity {
 
         entries.clear();
         entries.addAll(VaultStore.load(this));
-        if (fillMode) {
-            authenticate();
-        } else {
-            showList();
-        }
+        content.addView(Ui.item(this, "正在验证…", "需要生物识别或设备验证后才能查看", null));
+        authenticate();
     }
 
     private void authenticate() {
         BiometricManager manager = BiometricManager.from(this);
         int can = manager.canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_WEAK);
         if (can != BiometricManager.BIOMETRIC_SUCCESS) {
+            verified = true;
             showList();
             return;
         }
+        authenticating = true;
         BiometricPrompt prompt = new BiometricPrompt(this,
                 ContextCompat.getMainExecutor(this),
                 new BiometricPrompt.AuthenticationCallback() {
                     @Override
                     public void onAuthenticationSucceeded(BiometricPrompt.AuthenticationResult result) {
+                        authenticating = false;
+                        verified = true;
                         showList();
                     }
 
                     @Override
                     public void onAuthenticationError(int errorCode, CharSequence errString) {
+                        authenticating = false;
                         Toast.makeText(VaultActivity.this, "未解锁密码库", Toast.LENGTH_SHORT).show();
                         finish();
                     }
                 });
         BiometricPrompt.PromptInfo info = new BiometricPrompt.PromptInfo.Builder()
                 .setTitle("解锁密码库")
-                .setSubtitle("验证后选择要填充的账号")
+                .setSubtitle("验证后查看或填充保存的账号")
                 .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_WEAK)
                 .setNegativeButtonText("取消")
                 .build();
         prompt.authenticate(info);
+    }
+
+    @Override
+    protected void onStop() {
+        super.onStop();
+        if (!isChangingConfigurations() && verified && !authenticating && !fillMode) {
+            finish();
+        }
+    }
+
+    @Override
+    protected void onDestroy() {
+        handler.removeCallbacksAndMessages(null);
+        super.onDestroy();
     }
 
     private void showList() {
@@ -103,12 +128,13 @@ public class VaultActivity extends AppCompatActivity {
                 });
                 row.setOnLongClickListener(v -> {
                     new MaterialAlertDialogBuilder(this)
-                            .setTitle("删除账号")
-                            .setMessage(title)
-                            .setPositiveButton("删除", (d, w) -> {
-                                entries.remove(index);
-                                persist();
-                                showList();
+                            .setTitle(title)
+                            .setItems(new String[]{"复制密码", "删除账号"}, (d, which) -> {
+                                if (which == 0) {
+                                    copyPassword(entry.pass);
+                                } else {
+                                    confirmDelete(index, title);
+                                }
                             })
                             .setNegativeButton("取消", null)
                             .show();
@@ -120,6 +146,42 @@ public class VaultActivity extends AppCompatActivity {
         if (!fillMode) {
             content.addView(Ui.item(this, "添加账号", "AES-GCM + 系统密钥库加密", () -> edit(null)));
         }
+    }
+
+    private void copyPassword(String value) {
+        ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+        if (clipboard == null) {
+            return;
+        }
+        clipboard.setPrimaryClip(ClipData.newPlainText("密码", value));
+        Toast.makeText(this, "密码已复制，30 秒后自动清除", Toast.LENGTH_SHORT).show();
+        handler.postDelayed(() -> {
+            try {
+                ClipData clip = clipboard.getPrimaryClip();
+                if (clip != null && clip.getItemCount() > 0) {
+                    CharSequence text = clip.getItemAt(0).coerceToText(this);
+                    if (value.contentEquals(text)) {
+                        clipboard.setPrimaryClip(ClipData.newPlainText("", ""));
+                    }
+                }
+            } catch (Throwable ignored) {
+            }
+        }, 30000);
+    }
+
+    private void confirmDelete(final int index, String title) {
+        new MaterialAlertDialogBuilder(this)
+                .setTitle("删除账号")
+                .setMessage(title)
+                .setPositiveButton("删除", (d, w) -> {
+                    if (index >= 0 && index < entries.size()) {
+                        entries.remove(index);
+                        persist();
+                        showList();
+                    }
+                })
+                .setNegativeButton("取消", null)
+                .show();
     }
 
     private void edit(final VaultStore.Entry existing) {

@@ -116,6 +116,60 @@ public final class Prefs {
         sp.edit().putString("toolbar_items", value).apply();
     }
 
+    public static boolean homeLogo() {
+        return sp.getBoolean("home_logo", true);
+    }
+
+    public static void setHomeLogo(boolean value) {
+        sp.edit().putBoolean("home_logo", value).apply();
+    }
+
+    public static int homeLogoScale() {
+        return sp.getInt("home_logo_scale", 100);
+    }
+
+    public static void setHomeLogoScale(int value) {
+        sp.edit().putInt("home_logo_scale", Math.max(60, Math.min(140, value))).apply();
+    }
+
+    public static boolean homeSearch() {
+        return sp.getBoolean("home_search", true);
+    }
+
+    public static void setHomeSearch(boolean value) {
+        sp.edit().putBoolean("home_search", value).apply();
+    }
+
+    public static String homeSearchHint() {
+        String hint = sp.getString("home_search_hint", "搜索或输入网址");
+        return hint == null || hint.trim().isEmpty() ? "搜索或输入网址" : hint;
+    }
+
+    public static void setHomeSearchHint(String value) {
+        sp.edit().putString("home_search_hint",
+                value == null || value.trim().isEmpty() ? "搜索或输入网址" : value.trim()).apply();
+    }
+
+    public static int homeBgDim() {
+        return sp.getInt("home_bg_dim", 35);
+    }
+
+    public static void setHomeBgDim(int value) {
+        sp.edit().putInt("home_bg_dim", Math.max(0, Math.min(80, value))).apply();
+    }
+
+    public static String menuOrder() {
+        return sp.getString("menu_order", "");
+    }
+
+    public static int addressStyle() {
+        return sp.getInt("address_style", 1);
+    }
+
+    public static boolean barAutoHide() {
+        return sp.getBoolean("bar_autohide", true);
+    }
+
     public static boolean incognitoDefault() {
         return sp.getBoolean("incognito", false);
     }
@@ -169,14 +223,35 @@ public final class Prefs {
     }
 
     public static String davUser() {
-        return sp.getString("dav_user", "");
+        return secureValue("dav_user");
     }
 
     public static String davPass() {
-        return sp.getString("dav_pass", "");
+        return secureValue("dav_pass");
     }
 
     public static void setDav(String url, String user, String pass) {
-        sp.edit().putString("dav_url", url).putString("dav_user", user).putString("dav_pass", pass).apply();
+        String encryptedUser = SecurePrefs.encrypt(user);
+        String encryptedPass = SecurePrefs.encrypt(pass);
+        sp.edit()
+                .putString("dav_url", url)
+                .putString("dav_user", encryptedUser.isEmpty() ? user : encryptedUser)
+                .putString("dav_pass", encryptedPass.isEmpty() ? pass : encryptedPass)
+                .apply();
+    }
+
+    private static String secureValue(String key) {
+        String stored = sp.getString(key, "");
+        if (stored.isEmpty()) {
+            return "";
+        }
+        if (stored.startsWith("gcm:") || stored.startsWith("b64:")) {
+            return SecurePrefs.decrypt(stored);
+        }
+        String encrypted = SecurePrefs.encrypt(stored);
+        if (!encrypted.isEmpty()) {
+            sp.edit().putString(key, encrypted).apply();
+        }
+        return stored;
     }
 }

@@ -362,11 +362,16 @@ public final class GlassDrawable extends Drawable {
             return;
         }
         capturing = true;
-        host.setAlpha(0.01f);
-        for (View hide : captureHides) {
-            hide.setAlpha(0f);
+        // 仅当宿主与被捕获窗口是同一个窗口时才需要隐藏自身；
+        // 对话框里的玻璃抓取的是 Activity 窗口，隐藏宿主反而会造成闪烁。
+        boolean sameWindow = host.getRootView() == window.getDecorView();
+        if (sameWindow) {
+            host.setAlpha(0.01f);
+            for (View hide : captureHides) {
+                hide.setAlpha(0f);
+            }
+            handler.postDelayed(restoreTask, 500);
         }
-        handler.postDelayed(restoreTask, 500);
         try {
             host.postDelayed(() -> {
                 try {

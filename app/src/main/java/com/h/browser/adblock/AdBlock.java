@@ -4,190 +4,66 @@ import android.content.Context;
 
 import com.h.browser.core.UrlUtils;
 import com.h.browser.data.Prefs;
+import com.h.browser.privacy.PrivacyStats;
 
 import org.json.JSONObject;
 
-import java.io.BufferedReader;
-import java.io.ByteArrayOutputStream;
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
-import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.ConcurrentLinkedDeque;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.zip.GZIPInputStream;
 
 public final class AdBlock {
 
-    private static final Set<String> HOSTS = new HashSet<>();
-    private static final Set<String> EXCEPTIONS = new HashSet<>();
-    private static final Map<String, List<String>> COSMETIC = new LinkedHashMap<>();
-    private static final List<String> GENERIC = new ArrayList<>();
     private static final AtomicInteger BLOCKED = new AtomicInteger();
     private static final ConcurrentLinkedDeque<String> LOG = new ConcurrentLinkedDeque<>();
-    private static volatile boolean loaded;
-    private static File ruleFile;
+    private static final Map<String, Boolean> CACHE =
+            Collections.synchronizedMap(new LinkedHashMap<String, Boolean>(512, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, Boolean> eldest) {
+                    return size() > 4096;
+                }
+            });
 
-    private static final String SEED =
-            "||doubleclick.net^\n||googlesyndication.com^\n||googleadservices.com^\n"
-            + "||adservice.google.com^\n||ads.yahoo.com^\n||adnxs.com^\n||criteo.com^\n"
-            + "||taboola.com^\n||outbrain.com^\n||scorecardresearch.com^\n||quantserve.com^\n"
-            + "||adcolony.com^\n||applovin.com^\n||unityads.unity3d.com^\n||inmobi.com^\n"
-            + "||moatads.com^\n||advertising.com^\n||adform.net^\n||rubiconproject.com^\n"
-            + "||pubmatic.com^\n||openx.net^\n||casalemedia.com^\n||smartadserver.com^\n"
-            + "||zedo.com^\n||media.net^\n||propellerads.com^\n||popads.net^\n"
-            + "||umeng.com^\n||cnzz.com^\n||hm.baidu.com^\n||pos.baidu.com^\n"
-            + "##.adsbygoogle\n##.ad-banner\n##.advertisement\n##.ad-container\n"
-            + "##[id^=\"ad-\"]\n##[class^=\"ad-\"]\n";
+    private static volatile Rules rules = Rules.EMPTY;
+    private static volatile boolean loaded;
+    private static volatile int userCount;
+    private static volatile int subscriptionCount;
 
     private AdBlock() {
     }
 
     public static void init(Context context) {
-        if (ruleFile == null) {
-            ruleFile = new File(context.getApplicationContext().getFilesDir(), "adblock_rules.txt");
+        if (loaded) {
+            return;
         }
-        if (!loaded) {
-            loaded = true;
-            new Thread(() -> {
-                try {
-                    String content;
-                    if (ruleFile.exists() && ruleFile.length() > 0) {
-                        content = readFile(ruleFile);
-                    } else {
-                        content = SEED;
-                    }
-                    parse(content);
-                } catch (Throwable t) {
-                    parse(SEED);
-                }
-            }, "adblock-load").start();
-        }
-    }
-
-    private static String readFile(File file) throws Exception {
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        FileInputStream in = new FileInputStream(file);
-        byte[] buffer = new byte[8192];
-        int n;
-        while ((n = in.read(buffer)) > 0) {
-            out.write(buffer, 0, n);
-        }
-        in.close();
-        return new String(out.toByteArray(), StandardCharsets.UTF_8);
-    }
-
-    public static synchronized void parse(String content) {
-        Set<String> hosts = new HashSet<>();
-        Set<String> exceptions = new HashSet<>();
-        Map<String, List<String>> cosmetic = new LinkedHashMap<>();
-        List<String> generic = new ArrayList<>();
-        String[] lines = content.split("\n");
-        for (String raw : lines) {
-            String line = raw.trim();
-            if (line.isEmpty() || line.startsWith("!") || line.startsWith("[") || line.startsWith("#")) {
-                continue;
-            }
+        loaded = true;
+        final Context app = context.getApplicationContext();
+        new Thread(() -> {
             try {
-                parseLine(line, hosts, exceptions, cosmetic, generic);
-            } catch (Throwable ignored) {
+                Subscriptions.refresh(app);
+                Subscriptions.maybeAutoUpdate(app);
+            } catch (Throwable t) {
+                applySnapshot(Rules.parse(Subscriptions.BUILTIN), 0, 0);
             }
-        }
-        synchronized (AdBlock.class) {
-            HOSTS.clear();
-            HOSTS.addAll(hosts);
-            EXCEPTIONS.clear();
-            EXCEPTIONS.addAll(exceptions);
-            COSMETIC.clear();
-            COSMETIC.putAll(cosmetic);
-            GENERIC.clear();
-            GENERIC.addAll(generic);
-        }
+        }, "adblock-load").start();
     }
 
-    private static void parseLine(String line, Set<String> hosts, Set<String> exceptions,
-                                  Map<String, List<String>> cosmetic, List<String> generic) {
-        if (line.startsWith("@@")) {
-            String host = extractHost(line.substring(2));
-            if (!host.isEmpty()) {
-                exceptions.add(host);
-            }
+    static void applySnapshot(Rules snapshot, int users, int subs) {
+        if (snapshot == null) {
             return;
         }
-        int cosmeticIndex = line.indexOf("##");
-        if (cosmeticIndex > 0 || line.startsWith("##")) {
-            String domains = cosmeticIndex > 0 ? line.substring(0, cosmeticIndex) : "";
-            String selector = line.substring(cosmeticIndex + 2).trim();
-            if (selector.isEmpty()) {
-                return;
-            }
-            if (domains.isEmpty()) {
-                generic.add(selector);
-            } else {
-                for (String domain : domains.split(",")) {
-                    String d = domain.trim().toLowerCase(Locale.US);
-                    if (d.startsWith("~") || d.isEmpty()) {
-                        continue;
-                    }
-                    List<String> list = cosmetic.get(d);
-                    if (list == null) {
-                        list = new ArrayList<>();
-                        cosmetic.put(d, list);
-                    }
-                    list.add(selector);
-                }
-            }
-            return;
-        }
-        String host = extractHost(line);
-        if (!host.isEmpty()) {
-            hosts.add(host);
-        }
+        rules = snapshot;
+        userCount = users;
+        subscriptionCount = subs;
+        CACHE.clear();
     }
 
-    private static String extractHost(String raw) {
-        String s = raw.trim();
-        if (s.startsWith("||")) {
-            s = s.substring(2);
-        }
-        if (s.startsWith("|")) {
-            s = s.substring(1);
-        }
-        int end = s.length();
-        for (int i = 0; i < s.length(); i++) {
-            char c = s.charAt(i);
-            if (c == '^' || c == '/' || c == '|' || c == '$' || c == '*') {
-                end = i;
-                break;
-            }
-        }
-        s = s.substring(0, end).toLowerCase(Locale.US);
-        if (s.startsWith("www.")) {
-            s = s.substring(4);
-        }
-        if (s.contains(":") || s.contains(" ") || !s.contains(".")) {
-            return "";
-        }
-        for (int i = 0; i < s.length(); i++) {
-            char c = s.charAt(i);
-            if (!(Character.isLetterOrDigit(c) || c == '.' || c == '-' || c == '_')) {
-                return "";
-            }
-        }
-        return s;
+    public static void parse(String content) {
+        applySnapshot(Rules.parse(content), 0, 0);
     }
 
     public static boolean isEnabled() {
@@ -195,68 +71,146 @@ public final class AdBlock {
     }
 
     public static boolean shouldBlock(String url) {
-        if (!isEnabled() || url == null) {
+        return shouldBlock(url, url, false, false);
+    }
+
+    public static boolean shouldBlock(String url, String pageUrl, boolean mainFrame,
+                                      boolean incognito) {
+        if (mainFrame || url == null || !isEnabled()) {
             return false;
         }
-        String host = UrlUtils.host(url);
-        if (host.isEmpty()) {
+        if (UrlUtils.isInternal(url)) {
             return false;
         }
-        synchronized (AdBlock.class) {
-            for (String exception : EXCEPTIONS) {
-                if (host.equals(exception) || host.endsWith("." + exception)) {
-                    return false;
+        String docHost = UrlUtils.host(pageUrl);
+        String type = Rules.requestType(url);
+        String key = url + '\n' + docHost + '\n' + type;
+        Boolean cached = CACHE.get(key);
+        if (cached != null) {
+            if (cached) {
+                BLOCKED.incrementAndGet();
+                if (!incognito) {
+                    PrivacyStats.recordBlocked();
                 }
             }
-            for (String rule : HOSTS) {
-                if (host.equals(rule) || host.endsWith("." + rule)) {
-                    BLOCKED.incrementAndGet();
-                    LOG.addFirst(host + "  " + url);
-                    while (LOG.size() > 200) {
-                        LOG.removeLast();
-                    }
-                    return true;
+            return cached;
+        }
+        boolean blocked = rules.blocks(url, docHost, type);
+        CACHE.put(key, blocked);
+        if (blocked) {
+            BLOCKED.incrementAndGet();
+            if (!incognito) {
+                PrivacyStats.recordBlocked();
+                LOG.addFirst(UrlUtils.host(url) + "  " + url);
+                while (LOG.size() > 200) {
+                    LOG.removeLast();
                 }
             }
         }
-        return false;
+        return blocked;
+    }
+
+    public static List<String> selectorsFor(String url) {
+        if (!isEnabled() || url == null || url.isEmpty()) {
+            return Collections.emptyList();
+        }
+        return rules.cosmeticFor(UrlUtils.host(url));
     }
 
     public static String cosmeticCss(String url) {
-        if (!isEnabled()) {
-            return "";
-        }
-        String host = UrlUtils.host(url);
-        List<String> selectors = new ArrayList<>();
-        synchronized (AdBlock.class) {
-            selectors.addAll(GENERIC);
-            for (Map.Entry<String, List<String>> entry : COSMETIC.entrySet()) {
-                String domain = entry.getKey();
-                if (host.equals(domain) || host.endsWith("." + domain)) {
-                    selectors.addAll(entry.getValue());
-                }
-            }
-        }
+        List<String> selectors = selectorsFor(url);
         if (selectors.isEmpty()) {
             return "";
         }
         StringBuilder sb = new StringBuilder();
+        int count = 0;
+        int bytes = 0;
         for (String selector : selectors) {
+            int extra = selector.length() + 1;
+            if (count >= 4000 || bytes + extra > 512 * 1024) {
+                break;
+            }
             if (sb.length() > 0) {
                 sb.append(',');
             }
             sb.append(selector);
+            count++;
+            bytes += extra;
+        }
+        if (sb.length() == 0) {
+            return "";
         }
         sb.append("{display:none!important}");
         return sb.toString();
     }
 
+    public static String injectScript(String url) {
+        List<String> selectors = selectorsFor(url);
+        if (selectors.isEmpty()) {
+            return legacyScript();
+        }
+        List<String> chunks = new ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        int count = 0;
+        int bytes = 0;
+        for (String selector : selectors) {
+            if (count >= 4000 || bytes > 512 * 1024) {
+                break;
+            }
+            if (current.length() > 0) {
+                current.append(',');
+            }
+            current.append(selector);
+            count++;
+            bytes += selector.length() + 1;
+            if (count % 200 == 0) {
+                current.append("{display:none!important}");
+                chunks.add(current.toString());
+                current.setLength(0);
+            }
+        }
+        if (current.length() > 0) {
+            current.append("{display:none!important}");
+            chunks.add(current.toString());
+        }
+        StringBuilder array = new StringBuilder("[");
+        for (int i = 0; i < chunks.size(); i++) {
+            if (i > 0) {
+                array.append(',');
+            }
+            array.append(JSONObject.quote(chunks.get(i)));
+        }
+        array.append(']');
+        return "(function(){for(var i=0;i<16;i++){var e=document.getElementById('h-adblock-'+i);"
+                + "if(e&&e.parentNode)e.parentNode.removeChild(e);}"
+                + "var c=" + array + ";for(var i=0;i<c.length;i++){"
+                + "try{var s=document.createElement('style');s.id='h-adblock-'+i;s.textContent=c[i];"
+                + "(document.head||document.documentElement).appendChild(s);}catch(e){}}"
+                + legacyPart() + "})();";
+    }
+
+    private static String legacyScript() {
+        String part = legacyPart();
+        return part.isEmpty() ? "" : "(function(){" + part + "})();";
+    }
+
+    private static String legacyPart() {
+        return "try{var a=JSON.parse(localStorage.getItem('h_ad_rules')||'[]');"
+                + "var q=[];for(var i=0;i<a.length;i++){var v=String(a[i]);"
+                + "if(v&&v.length<300&&!/[{};\\n\\r]/.test(v))q.push(v);}"
+                + "if(q.length){var s=document.getElementById('h-ad-rules');"
+                + "if(!s){s=document.createElement('style');s.id='h-ad-rules';"
+                + "(document.head||document.documentElement).appendChild(s);}"
+                + "s.textContent=q.join(',')+'{display:none!important}';}}catch(e){}";
+    }
+
     public static String injectCssScript(String css) {
-        if (css.isEmpty()) {
+        if (css == null || css.isEmpty()) {
             return "";
         }
-        return "(function(){var id='h-adblock-style';var s=document.getElementById(id);"
-                + "if(!s){s=document.createElement('style');s.id=id;(document.head||document.documentElement).appendChild(s);}"
+        return "(function(){var id='h-adblock-0';var s=document.getElementById(id);"
+                + "if(!s){s=document.createElement('style');s.id=id;"
+                + "(document.head||document.documentElement).appendChild(s);}"
                 + "s.textContent=" + JSONObject.quote(css) + ";})();";
     }
 
@@ -274,9 +228,55 @@ public final class AdBlock {
     }
 
     public static int ruleCount() {
-        synchronized (AdBlock.class) {
-            return HOSTS.size();
+        return rules.counts.total();
+    }
+
+    public static int hostRuleCount() {
+        return rules.counts.hostRules;
+    }
+
+    public static Rules.Counts counts() {
+        return rules.counts;
+    }
+
+    public static int userRuleCount() {
+        return userCount;
+    }
+
+    public static int subscriptionCount() {
+        return subscriptionCount;
+    }
+
+    public static String statsSummary() {
+        Rules.Counts c = rules.counts;
+        return "主机 " + c.hostRules + " · 路径/选项 " + c.netRules
+                + " · 例外 " + c.exceptions + " · 元素 " + c.cosmeticRules
+                + "\n我的规则 " + userCount + " 条 · 启用订阅 " + subscriptionCount
+                + " · 未支持 " + c.unsupported;
+    }
+
+    public static String subscriptionSummary(Context context) {
+        return Subscriptions.summary(context);
+    }
+
+    public static List<String> userRules(Context context) {
+        return Subscriptions.userRules(context);
+    }
+
+    public static boolean saveUserRule(Context context, String host, String selector) {
+        boolean ok = Subscriptions.addUserRule(context, host, selector);
+        if (ok) {
+            Subscriptions.refresh(context);
         }
+        return ok;
+    }
+
+    public static boolean removeUserRule(Context context, String line) {
+        boolean ok = Subscriptions.removeUserRule(context, line);
+        if (ok) {
+            Subscriptions.refresh(context);
+        }
+        return ok;
     }
 
     public interface Callback {
@@ -284,56 +284,32 @@ public final class AdBlock {
     }
 
     public static void updateSubscription(Context context, String url, Callback callback) {
-        new Thread(() -> {
-            try {
-                HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
-                conn.setConnectTimeout(20000);
-                conn.setReadTimeout(40000);
-                conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android) H-browser");
-                conn.setRequestProperty("Accept-Encoding", "gzip");
-                int code = conn.getResponseCode();
-                if (code < 200 || code >= 300) {
-                    callback.onResult(false, "HTTP " + code);
-                    return;
-                }
-                InputStream in = conn.getInputStream();
-                if ("gzip".equalsIgnoreCase(conn.getContentEncoding())) {
-                    in = new GZIPInputStream(in);
-                }
-                BufferedReader reader = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8));
-                StringBuilder sb = new StringBuilder();
-                String line;
-                int count = 0;
-                while ((line = reader.readLine()) != null && count < 400000) {
-                    sb.append(line).append('\n');
-                    count++;
-                }
-                reader.close();
-                String content = sb.toString();
-                parse(content);
-                FileOutputStream out = new FileOutputStream(ruleFile);
-                out.write(content.getBytes(StandardCharsets.UTF_8));
-                out.close();
-                Prefs.setAdblockUpdated(System.currentTimeMillis());
-                callback.onResult(true, "已更新，规则 " + ruleCount() + " 条");
-            } catch (Throwable t) {
-                callback.onResult(false, "更新失败：" + t.getMessage());
+        if (url == null || url.trim().isEmpty()) {
+            updateAll(context, callback);
+            return;
+        }
+        Subscriptions.Sub match = null;
+        for (Subscriptions.Sub sub : Subscriptions.list(context)) {
+            if (sub.url.equals(url.trim())) {
+                match = sub;
+                break;
             }
-        }, "adblock-update").start();
+        }
+        if (match != null) {
+            Subscriptions.updateOne(context, match.id, callback);
+            return;
+        }
+        Subscriptions.Sub added = Subscriptions.addCustom(context, null, url);
+        if (added == null) {
+            if (callback != null) {
+                callback.onResult(false, "订阅地址无效");
+            }
+            return;
+        }
+        Subscriptions.updateOne(context, added.id, callback);
     }
 
-    public static List<String> hostRulesSnapshot() {
-        synchronized (AdBlock.class) {
-            return new ArrayList<>(HOSTS);
-        }
-    }
-
-    public static void setHostRules(List<String> rules) {
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < rules.size(); i++) {
-            if (i > 0) sb.append('\n');
-            sb.append(rules.get(i));
-        }
-        parse(sb.toString());
+    public static void updateAll(Context context, Callback callback) {
+        Subscriptions.updateAll(context, callback);
     }
 }

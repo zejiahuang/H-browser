@@ -11,6 +11,7 @@ import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
 import android.content.res.Configuration;
 import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
@@ -23,12 +24,17 @@ import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewConfiguration;
 import android.view.ViewGroup;
+import android.view.VelocityTracker;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodManager;
 import android.webkit.CookieManager;
 import android.webkit.DownloadListener;
+import android.webkit.GeolocationPermissions;
+import android.webkit.HttpAuthHandler;
 import android.webkit.JavascriptInterface;
+import android.webkit.PermissionRequest;
 import android.webkit.SslErrorHandler;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
@@ -57,11 +63,13 @@ import androidx.core.view.WindowInsetsCompat;
 import androidx.core.view.WindowInsetsControllerCompat;
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
 import androidx.webkit.WebSettingsCompat;
+import androidx.webkit.WebViewFeature;
 
 import com.google.android.material.bottomsheet.BottomSheetDialog;
 import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 import com.google.android.material.snackbar.Snackbar;
 import com.h.browser.R;
+import com.h.browser.BuildConfig;
 import com.h.browser.adblock.AdBlock;
 import com.h.browser.ai.AiChatActivity;
 import com.h.browser.data.Backup;
@@ -69,6 +77,14 @@ import com.h.browser.data.Db;
 import com.h.browser.data.Prefs;
 import com.h.browser.download.DownloadActivity;
 import com.h.browser.download.Downloader;
+import com.h.browser.net.WebViewProxy;
+import com.h.browser.privacy.Injection;
+import com.h.browser.privacy.PermissionStore;
+import com.h.browser.privacy.PrivacyNav;
+import com.h.browser.privacy.PrivacyPrefs;
+import com.h.browser.privacy.PrivacyStats;
+import com.h.browser.privacy.SslExceptionStore;
+import com.h.browser.privacy.TrustedChannel;
 import com.h.browser.reader.ReaderActivity;
 import com.h.browser.scanner.ScanActivity;
 import com.h.browser.sniffer.MediaListActivity;
@@ -85,6 +101,7 @@ import com.h.browser.ui.GlassRenderer;
 import com.h.browser.ui.GlassShadowView;
 import com.h.browser.ui.HMarkView;
 import com.h.browser.ui.InternalPages;
+import com.h.browser.ui.MenuDefs;
 import com.h.browser.ui.NativeBridge;
 import com.h.browser.ui.ProgressiveBlurView;
 import com.h.browser.ui.SettingsActivity;
@@ -104,7 +121,7 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
+import java.util.Set;
 
 public class BrowserActivity extends AppCompatActivity {
 
@@ -114,6 +131,8 @@ public class BrowserActivity extends AppCompatActivity {
     private static final int REQ_IMPORT_BM = 1005;
     private static final int REQ_EXPORT_BM = 1006;
     private static final int REQ_EXPORT_HISTORY = 1007;
+    private static final int REQ_PERM_MEDIA = 1008;
+    private static final int REQ_PERM_LOCATION = 1009;
     private static final int MAX_TABS = 12;
     private static final String LINK_JS = "(function(){if(window.__hLinkMenu)return;window.__hLinkMenu=1;"
             + "document.addEventListener('contextmenu',function(e){var t=e.target;"
@@ -125,6 +144,16 @@ public class BrowserActivity extends AppCompatActivity {
     private FrameLayout webContainer;
     private FrameLayout pageHost;
     private FrameLayout homeOverlay;
+    private ImageView homeBgImage;
+    private View homeBgDim;
+    private HMarkView homeLogo;
+    private LinearLayout homePill;
+    private TextView homePillHint;
+    private int homeBgVersionCache = -1;
+    private int lastScrollY;
+    private boolean barHidden;
+    private android.app.Dialog menuDialog;
+    private Boolean webDarkApplied;
     private View pageDim;
     private ProgressiveBlurView progressiveBlur;
     private SwipeRefreshLayout refreshLayout;
@@ -159,6 +188,11 @@ public class BrowserActivity extends AppCompatActivity {
     private float touchStartY;
     private int edgeStart;
     private boolean edgeHandled;
+    private Runnable pendingPermGrant;
+    private Runnable pendingPermDeny;
+    private boolean sslDialogShowing;
+    private String privacySignature;
+    private volatile boolean pickerActive;
 
     private final List<Tab> tabs = new ArrayList<>();
     private int current = -1;
@@ -187,6 +221,9 @@ public class BrowserActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
         applySystemBars();
+        if (BuildConfig.DEBUG) {
+            WebView.setWebContentsDebuggingEnabled(Prefs.get().getBoolean("debug_web", false));
+        }
         AdBlock.init(this);
         UserScripts.init(this);
         buildUi();
@@ -405,12 +442,22 @@ public class BrowserActivity extends AppCompatActivity {
         refreshLayout.setColorSchemeColors(color(R.color.primary));
         refreshLayout.setEnabled(Prefs.pullRefresh());
         refreshLayout.setOnRefreshListener(() -> {
+            if (barHidden) {
+                barHidden = false;
+                updateBottomBarLift();
+            }
             WebView web = currentWeb();
             if (web != null) {
                 web.reload();
             } else {
                 refreshLayout.setRefreshing(false);
             }
+        });
+        // 默认实现只检查直接子 View（pageHost 是个 FrameLayout，永远“到顶”），
+        // 会在页面中部抢走向下拖拽手势；改为查询当前 WebView 的真实滚动位置。
+        refreshLayout.setOnChildScrollUpCallback((parent, child) -> {
+            WebView web = currentWeb();
+            return web != null && web.canScrollVertically(-1);
         });
         pageHost = new FrameLayout(this);
         refreshLayout.addView(pageHost, new SwipeRefreshLayout.LayoutParams(
@@ -574,9 +621,13 @@ public class BrowserActivity extends AppCompatActivity {
 
     private void updateBarMode() {
         Tab tab = currentTab();
-        boolean home = tab != null && "v://home".equals(tab.url);
+        boolean home = tab != null && isHomeTab(tab);
         boolean split = home && !editingAddress && !fullscreen
                 && homeBar != null && Glass.floatingToolbar();
+        if ((split || fullscreen) && barHidden) {
+            barHidden = false;
+            updateBottomBarLift();
+        }
         if (homeBar != null) {
             homeBar.setVisibility(split ? View.VISIBLE : View.GONE);
         }
@@ -605,6 +656,31 @@ public class BrowserActivity extends AppCompatActivity {
         } else {
             syncBottomStrip();
         }
+    }
+
+    private boolean isHomeTab(Tab tab) {
+        if (tab == null) {
+            return false;
+        }
+        if (UrlUtils.isHome(tab.url)) {
+            return true;
+        }
+        if (!UrlUtils.isInternal(tab.url)) {
+            return false;
+        }
+        try {
+            return tab.web != null && UrlUtils.isHome(tab.web.getUrl());
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    private void assignPageUrl(Tab tab, String url) {
+        if (tab == null || url == null || "about:blank".equals(url)
+                || url.startsWith("data:") || url.startsWith("blob:")) {
+            return;
+        }
+        tab.url = url;
     }
 
     private void applyToolbarStyle() {
@@ -724,7 +800,10 @@ public class BrowserActivity extends AppCompatActivity {
         if (bottomBar == null) {
             return;
         }
-        float target = editingAddress ? -imeLift : 0f;
+        float hiddenOffset = bottomBar.getHeight() > 0
+                ? bottomBar.getHeight() + dp(Glass.toolbarMargin()) + dp(12)
+                : dp(120);
+        float target = editingAddress ? -imeLift : (barHidden ? hiddenOffset : 0f);
         if (homeBar != null && homeBar.getTranslationY() != target) {
             homeBar.animate().translationY(target).setDuration(180).start();
         }
@@ -739,41 +818,98 @@ public class BrowserActivity extends AppCompatActivity {
         }
     }
 
+    private void handlePageScroll(int y) {
+        Tab tab = currentTab();
+        boolean page = tab != null && tab.web != null
+                && !UrlUtils.isInternal(tab.url) && !isDataPage(tab.url);
+        if (!Prefs.barAutoHide() || fullscreen || editingAddress || !page) {
+            lastScrollY = y;
+            if (barHidden) {
+                barHidden = false;
+                updateBottomBarLift();
+            }
+            return;
+        }
+        int delta = y - lastScrollY;
+        if (y <= dp(24)) {
+            if (barHidden) {
+                barHidden = false;
+                updateBottomBarLift();
+            }
+        } else if (delta > dp(10) && y > dp(180)) {
+            if (!barHidden) {
+                barHidden = true;
+                updateBottomBarLift();
+            }
+        } else if (delta < -dp(6)) {
+            if (barHidden) {
+                barHidden = false;
+                updateBottomBarLift();
+            }
+        }
+        lastScrollY = y;
+    }
+
     private void buildHomeOverlay() {
         homeOverlay = new FrameLayout(this);
         homeOverlay.setBackgroundColor(color(R.color.surface));
         homeOverlay.setClickable(true);
 
+        homeBgImage = new ImageView(this);
+        homeBgImage.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        homeBgImage.setVisibility(View.GONE);
+        homeBgImage.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        homeOverlay.addView(homeBgImage, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        homeBgDim = new View(this);
+        homeBgDim.setBackgroundColor(0xFF000000);
+        homeBgDim.setVisibility(View.GONE);
+        homeBgDim.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        homeOverlay.addView(homeBgDim, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
         LinearLayout group = new LinearLayout(this);
         group.setOrientation(LinearLayout.VERTICAL);
         group.setGravity(Gravity.CENTER_HORIZONTAL);
 
-        HMarkView logo = new HMarkView(this);
-        group.addView(logo, new LinearLayout.LayoutParams(dp(78), dp(65)));
+        homeLogo = new HMarkView(this);
+        group.addView(homeLogo, new LinearLayout.LayoutParams(dp(78), dp(65)));
 
-        LinearLayout pill = new LinearLayout(this);
-        pill.setOrientation(LinearLayout.HORIZONTAL);
-        pill.setGravity(Gravity.CENTER_VERTICAL);
+        homePill = new LinearLayout(this);
+        homePill.setOrientation(LinearLayout.HORIZONTAL);
+        homePill.setGravity(Gravity.CENTER_VERTICAL);
         android.graphics.drawable.GradientDrawable outline =
                 new android.graphics.drawable.GradientDrawable();
-        outline.setColor(Glass.night(this) ? 0xFF1C1C1C : 0xFFFFFFFF);
+        outline.setColor(Glass.night(this) ? 0xB31C1C1C : 0xCCFFFFFF);
         outline.setStroke(Math.max(1, dp(1)),
-                Glass.night(this) ? 0xFF3A4144 : 0xFFCCD3D4);
+                Glass.night(this) ? 0x664A5154 : 0x44AEB7B8);
         outline.setCornerRadius(dp(23));
-        pill.setBackground(outline);
-        pill.setClickable(true);
-        pill.setContentDescription("搜索或输入网址");
-        pill.setOnClickListener(v -> beginEdit());
+        homePill.setBackground(outline);
+        homePill.setClickable(true);
+        homePill.setContentDescription("搜索或输入网址");
+        homePill.setOnClickListener(v -> beginEdit());
+        homePillHint = new TextView(this);
+        homePillHint.setText("搜索或输入网址");
+        homePillHint.setTextSize(15);
+        homePillHint.setSingleLine(true);
+        homePillHint.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        homePillHint.setTextColor(Glass.night(this) ? 0xFFDEE4E4 : 0xFF3F4849);
+        LinearLayout.LayoutParams hintParams = new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        hintParams.setMarginStart(dp(20));
+        hintParams.setMarginEnd(dp(16));
+        homePill.addView(homePillHint, hintParams);
         LinearLayout.LayoutParams pillParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(46));
         pillParams.setMargins(dp(24), dp(38), dp(24), 0);
-        group.addView(pill, pillParams);
+        group.addView(homePill, pillParams);
 
         FrameLayout.LayoutParams groupParams = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
                 Gravity.CENTER);
         homeOverlay.addView(group, groupParams);
-        group.setTranslationY(-dp(112));
+        group.setTranslationY(-dp(136));
         // 首次冷启动 System WebView 初始化会阻塞主线程，先让原生主页层可见，
         // 等标签选定后再由 updateHomeOverlay 决定显隐。
         homeOverlay.setVisibility(View.VISIBLE);
@@ -786,9 +922,30 @@ public class BrowserActivity extends AppCompatActivity {
             return;
         }
         Tab tab = currentTab();
-        boolean show = tab == null || "v://home".equals(tab.url);
+        boolean show = tab == null || isHomeTab(tab);
         int homeBg = Prefs.get().getInt("home_bg", 0);
         homeOverlay.setBackgroundColor(homeBg != 0 ? homeBg : color(R.color.surface));
+        boolean hasImage = new File(getFilesDir(), "home_bg.jpg").exists();
+        if (homeBgImage != null) {
+            homeBgImage.setVisibility(hasImage ? View.VISIBLE : View.GONE);
+            loadHomeBackground(hasImage);
+        }
+        if (homeBgDim != null) {
+            homeBgDim.setVisibility(hasImage ? View.VISIBLE : View.GONE);
+            homeBgDim.setAlpha(Math.max(0, Math.min(80, Prefs.homeBgDim())) / 100f);
+        }
+        if (homeLogo != null) {
+            homeLogo.setVisibility(Prefs.homeLogo() ? View.VISIBLE : View.GONE);
+            float scale = Prefs.homeLogoScale() / 100f;
+            homeLogo.setScaleX(scale);
+            homeLogo.setScaleY(scale);
+        }
+        if (homePill != null) {
+            homePill.setVisibility(Prefs.homeSearch() ? View.VISIBLE : View.GONE);
+        }
+        if (homePillHint != null) {
+            homePillHint.setText(Prefs.homeSearchHint());
+        }
         boolean page = tab != null && !UrlUtils.isInternal(tab.url);
         boolean dim = !show && page && Glass.night(this);
         if (pageDim != null) {
@@ -796,6 +953,44 @@ public class BrowserActivity extends AppCompatActivity {
         }
         homeOverlay.setVisibility(show ? View.VISIBLE : View.GONE);
         updateProgressiveBlur();
+    }
+
+    private void loadHomeBackground(boolean exists) {
+        int version = Prefs.get().getInt("home_bg_version", 0);
+        if (version == homeBgVersionCache) {
+            return;
+        }
+        homeBgVersionCache = version;
+        if (!exists) {
+            homeBgImage.setImageDrawable(null);
+            return;
+        }
+        final File file = new File(getFilesDir(), "home_bg.jpg");
+        new Thread(() -> {
+            Bitmap bitmap = null;
+            try {
+                BitmapFactory.Options bounds = new BitmapFactory.Options();
+                bounds.inJustDecodeBounds = true;
+                BitmapFactory.decodeFile(file.getAbsolutePath(), bounds);
+                int sample = 1;
+                while (Math.max(bounds.outWidth, bounds.outHeight) / sample > 1600) {
+                    sample *= 2;
+                }
+                BitmapFactory.Options options = new BitmapFactory.Options();
+                options.inSampleSize = sample;
+                bitmap = BitmapFactory.decodeFile(file.getAbsolutePath(), options);
+            } catch (Throwable ignored) {
+            }
+            final Bitmap decoded = bitmap;
+            if (decoded == null) {
+                return;
+            }
+            runOnUiThread(() -> {
+                if (homeBgImage != null && !isFinishing()) {
+                    homeBgImage.setImageBitmap(decoded);
+                }
+            });
+        }, "home-bg-load").start();
     }
 
     private void updateProgressiveBlur() {
@@ -864,6 +1059,34 @@ public class BrowserActivity extends AppCompatActivity {
                 case "newtab":
                     toolbar.addView(toolButton(R.drawable.ic_add, "新建标签",
                             v -> newTab(Prefs.homepage(), false)), weightParams());
+                    break;
+                case "bookmarks":
+                    toolbar.addView(toolButton(R.drawable.ic_star, "书签",
+                            v -> openUrl("v://bookmarks", false)), weightParams());
+                    break;
+                case "downloads":
+                    toolbar.addView(toolButton(R.drawable.ic_download, "下载",
+                            v -> openDownloads()), weightParams());
+                    break;
+                case "share":
+                    toolbar.addView(toolButton(R.drawable.ic_share, "分享",
+                            v -> sharePage()), weightParams());
+                    break;
+                case "search":
+                    toolbar.addView(toolButton(R.drawable.ic_search, "搜索",
+                            v -> beginEdit()), weightParams());
+                    break;
+                case "find":
+                    toolbar.addView(toolButton(R.drawable.ic_log, "页内查找",
+                            v -> showFindBar()), weightParams());
+                    break;
+                case "settings":
+                    toolbar.addView(toolButton(R.drawable.ic_settings, "设置",
+                            v -> openSettings()), weightParams());
+                    break;
+                case "ai":
+                    toolbar.addView(toolButton(R.drawable.ic_ai, "AI",
+                            v -> askAi()), weightParams());
                     break;
                 case "menu":
                     toolbar.addView(toolButton(R.drawable.ic_menu, "菜单",
@@ -1034,6 +1257,17 @@ public class BrowserActivity extends AppCompatActivity {
         return null;
     }
 
+    public boolean currentPageInternal() {
+        Tab tab = currentTab();
+        if (tab == null) {
+            return false;
+        }
+        if (UrlUtils.isInternal(tab.url)) {
+            return true;
+        }
+        return tab.web != null && UrlUtils.isInternal(tab.web.getUrl());
+    }
+
     private void newTab(String url, boolean incognito) {
         Tab tab = newEmptyTab(incognito);
         if (tab == null) {
@@ -1069,6 +1303,7 @@ public class BrowserActivity extends AppCompatActivity {
             if (bottomBarGlass != null) {
                 bottomBarGlass.refreshAfterIdle();
             }
+            handlePageScroll(y);
         });
         WebSettings settings = web.getSettings();
         settings.setJavaScriptEnabled(true);
@@ -1079,19 +1314,45 @@ public class BrowserActivity extends AppCompatActivity {
         settings.setBuiltInZoomControls(true);
         settings.setDisplayZoomControls(false);
         settings.setSupportZoom(true);
-        settings.setAllowFileAccess(true);
+        settings.setAllowFileAccess(false);
+        settings.setAllowContentAccess(true);
+        if (Build.VERSION.SDK_INT >= 16) {
+            settings.setAllowFileAccessFromFileURLs(false);
+            settings.setAllowUniversalAccessFromFileURLs(false);
+        }
         settings.setJavaScriptCanOpenWindowsAutomatically(true);
         settings.setTextZoom(Prefs.fontZoom());
-        settings.setGeolocationEnabled(false);
+        settings.setGeolocationEnabled(true);
         if (Build.VERSION.SDK_INT >= 21) {
             settings.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
         }
         if (Build.VERSION.SDK_INT >= 26) {
             settings.setSafeBrowsingEnabled(true);
         }
+        try {
+            CookieManager.getInstance().setAcceptThirdPartyCookies(
+                    web, !PrivacyPrefs.blockThirdPartyCookies());
+        } catch (Throwable ignored) {
+        }
+        try {
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_AUTHENTICATION)) {
+                WebSettingsCompat.setWebAuthenticationSupport(settings,
+                        WebSettingsCompat.WEB_AUTHENTICATION_SUPPORT_FOR_BROWSER);
+                if (WebSettingsCompat.getWebAuthenticationSupport(settings)
+                        == WebSettingsCompat.WEB_AUTHENTICATION_SUPPORT_NONE) {
+                    WebSettingsCompat.setWebAuthenticationSupport(settings,
+                            WebSettingsCompat.WEB_AUTHENTICATION_SUPPORT_FOR_APP);
+                }
+            }
+        } catch (Throwable ignored) {
+        }
         if (Prefs.webDark() || Glass.night(this)) {
             try {
-                WebSettingsCompat.setAlgorithmicDarkeningAllowed(settings, true);
+                if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
+                    WebSettingsCompat.setAlgorithmicDarkeningAllowed(settings, true);
+                } else if (Build.VERSION.SDK_INT >= 29) {
+                    settings.setForceDark(WebSettings.FORCE_DARK_ON);
+                }
             } catch (Throwable ignored) {
             }
         }
@@ -1110,7 +1371,7 @@ public class BrowserActivity extends AppCompatActivity {
         } else {
             web.setWebViewClient(new HClient());
         }
-        web.setWebChromeClient(new HChrome());
+        web.setWebChromeClient(Build.VERSION.SDK_INT >= 21 ? new HChrome21(web) : new HChrome(web));
         web.setDownloadListener(new DownloadListener() {
             @Override
             public void onDownloadStart(String url, String userAgent, String contentDisposition,
@@ -1131,6 +1392,8 @@ public class BrowserActivity extends AppCompatActivity {
         });
         web.addJavascriptInterface(new GmBridge(this, web), "HGM");
         web.addJavascriptInterface(new NativeBridge(this), "HNative");
+        Injection.install(web, this);
+        TrustedChannel.install(web, tab.incognito);
         web.setOnLongClickListener(v -> showLinkMenu(web));
         web.setFindListener((active, numberOfMatches, done) -> {
             if (findBar == null || findBar.getVisibility() != View.VISIBLE) {
@@ -1166,8 +1429,11 @@ public class BrowserActivity extends AppCompatActivity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         tab.web.onResume();
         progress.setVisibility(View.GONE);
+        barHidden = false;
+        lastScrollY = 0;
         updateUi();
         address.clearFocus();
+        updateBottomBarLift();
         updateProgressiveBlur();
     }
 
@@ -1211,10 +1477,17 @@ public class BrowserActivity extends AppCompatActivity {
             handleInternal(tab, url);
             return;
         }
+        url = PrivacyNav.strip(url);
+        url = PrivacyNav.upgrade(url);
         applySiteSettings(tab.web, url);
         tab.urlBeforeLoad = tab.url;
         tab.url = url;
-        tab.web.loadUrl(url);
+        java.util.Map<String, String> headers = PrivacyNav.headers();
+        if (headers.isEmpty()) {
+            tab.web.loadUrl(url);
+        } else {
+            tab.web.loadUrl(url, headers);
+        }
         if (tab == currentTab()) {
             updateAddress();
             updateUi();
@@ -1411,14 +1684,7 @@ public class BrowserActivity extends AppCompatActivity {
         boolean home = UrlUtils.isInternal(tab.url) && !isDataPage(tab.url);
         updateBarMode();
         if (titleView != null) {
-            String title = tab.title;
-            if (title == null || title.isEmpty() || title.equals(tab.url)) {
-                title = home ? "主页" : tab.url;
-            }
-            if (tab.incognito) {
-                title = "无痕 · " + title;
-            }
-            titleView.setText(title);
+            titleView.setText(addressLabel(tab, home));
         }
         if (addressLead != null) {
             addressLead.setImageResource(home ? R.drawable.ic_search : R.drawable.ic_shield_check);
@@ -1439,6 +1705,31 @@ public class BrowserActivity extends AppCompatActivity {
         address.setSelection(address.getText().length());
         settingAddress = false;
         updateClearButton();
+    }
+
+    private String addressLabel(Tab tab, boolean home) {
+        if (home) {
+            return tab.incognito ? "无痕 · 主页" : "主页";
+        }
+        String url = tab.url == null ? "" : tab.url;
+        String title = tab.title;
+        String host = UrlUtils.host(url);
+        boolean internal = UrlUtils.isInternal(url);
+        int style = Prefs.addressStyle();
+        String label;
+        if (style == 0 || internal) {
+            label = title == null || title.isEmpty() || title.equals(url)
+                    ? (host.isEmpty() ? url : host) : title;
+        } else if (style == 2) {
+            int scheme = url.indexOf("://");
+            label = scheme >= 0 ? url.substring(scheme + 3) : url;
+        } else {
+            label = host.startsWith("www.") ? host.substring(4) : host;
+            if (label.isEmpty()) {
+                label = title == null || title.isEmpty() ? url : title;
+            }
+        }
+        return tab.incognito ? "无痕 · " + label : label;
     }
 
     private void updateTabCount() {
@@ -1480,13 +1771,35 @@ public class BrowserActivity extends AppCompatActivity {
         updateAddress();
     }
 
+    private void applyWebDarkToTabs(boolean reload) {
+        boolean enable = Prefs.webDark() || Glass.night(this);
+        for (Tab tab : tabs) {
+            if (tab.web == null) {
+                continue;
+            }
+            try {
+                if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
+                    WebSettingsCompat.setAlgorithmicDarkeningAllowed(
+                            tab.web.getSettings(), enable);
+                } else if (Build.VERSION.SDK_INT >= 29) {
+                    tab.web.getSettings().setForceDark(enable
+                            ? WebSettings.FORCE_DARK_ON : WebSettings.FORCE_DARK_OFF);
+                }
+            } catch (Throwable ignored) {
+            }
+            if (reload && !UrlUtils.isInternal(tab.url)) {
+                tab.web.reload();
+            }
+        }
+    }
+
     private void injectCosmetic(WebView web, String url) {
         if (UrlUtils.isInternal(url) || !AdBlock.isEnabled() || !siteAdAllowed(url)) {
             return;
         }
-        String css = AdBlock.cosmeticCss(url);
-        if (!css.isEmpty()) {
-            web.evaluateJavascript(AdBlock.injectCssScript(css), null);
+        String script = AdBlock.injectScript(url);
+        if (!script.isEmpty()) {
+            web.evaluateJavascript(script, null);
         }
     }
 
@@ -1508,13 +1821,146 @@ public class BrowserActivity extends AppCompatActivity {
         tab.web.loadDataWithBaseURL("v://error", html, "text/html", "utf-8", null);
     }
 
+    private static final class MenuGestureLayout extends FrameLayout {
+        interface Callback {
+            void onHorizontal(float dx);
+
+            void onPageSwipe(float dx);
+
+            void onDrag(float dy);
+
+            void onDragRelease(float dy, float velocityY);
+        }
+
+        private final int slop;
+        private float downX;
+        private float downY;
+        private boolean horizontal;
+        private boolean vertical;
+        private Callback callback;
+        private VelocityTracker tracker;
+
+        MenuGestureLayout(Context context) {
+            super(context);
+            slop = ViewConfiguration.get(context).getScaledTouchSlop();
+            setClickable(true);
+        }
+
+        void setCallback(Callback callback) {
+            this.callback = callback;
+        }
+
+        @Override
+        public boolean onInterceptTouchEvent(MotionEvent ev) {
+            switch (ev.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    downX = ev.getX();
+                    downY = ev.getY();
+                    horizontal = false;
+                    vertical = false;
+                    recycleTracker();
+                    tracker = VelocityTracker.obtain();
+                    tracker.addMovement(ev);
+                    return false;
+                case MotionEvent.ACTION_MOVE:
+                    if (tracker != null) {
+                        tracker.addMovement(ev);
+                    }
+                    float dx = ev.getX() - downX;
+                    float dy = ev.getY() - downY;
+                    if (!horizontal && !vertical) {
+                        if (Math.abs(dx) > slop && Math.abs(dx) > Math.abs(dy) * 1.2f) {
+                            horizontal = true;
+                        } else if (dy > slop && dy > Math.abs(dx) * 1.2f) {
+                            vertical = true;
+                        }
+                    }
+                    return horizontal || vertical;
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    recycleTracker();
+                    return false;
+                default:
+                    return false;
+            }
+        }
+
+        @Override
+        public boolean onTouchEvent(MotionEvent ev) {
+            if (tracker != null) {
+                tracker.addMovement(ev);
+            }
+            switch (ev.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    downX = ev.getX();
+                    downY = ev.getY();
+                    horizontal = false;
+                    vertical = false;
+                    return true;
+                case MotionEvent.ACTION_MOVE: {
+                    float dx = ev.getX() - downX;
+                    float dy = ev.getY() - downY;
+                    if (!horizontal && !vertical) {
+                        if (Math.abs(dx) > slop && Math.abs(dx) > Math.abs(dy) * 1.2f) {
+                            horizontal = true;
+                        } else if (dy > slop && dy > Math.abs(dx) * 1.2f) {
+                            vertical = true;
+                        }
+                    }
+                    if (callback != null) {
+                        if (horizontal) {
+                            callback.onHorizontal(dx);
+                        } else if (vertical) {
+                            callback.onDrag(Math.max(0f, dy));
+                        }
+                    }
+                    return true;
+                }
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL: {
+                    float dx = ev.getX() - downX;
+                    float dy = ev.getY() - downY;
+                    float velocityY = 0f;
+                    if (tracker != null) {
+                        tracker.computeCurrentVelocity(1000);
+                        velocityY = tracker.getYVelocity();
+                    }
+                    recycleTracker();
+                    if (callback != null) {
+                        if (horizontal) {
+                            callback.onPageSwipe(dx);
+                        } else if (vertical) {
+                            callback.onDragRelease(Math.max(0f, dy), velocityY);
+                        } else {
+                            performClick();
+                        }
+                    }
+                    horizontal = false;
+                    vertical = false;
+                    return true;
+                }
+                default:
+                    return true;
+            }
+        }
+
+        private void recycleTracker() {
+            if (tracker != null) {
+                tracker.recycle();
+                tracker = null;
+            }
+        }
+    }
+
     private static final class MenuAction {
+        final String id;
         final int icon;
         final String label;
         final boolean enabled;
         final Runnable task;
 
-        MenuAction(int icon, String label, boolean enabled, Runnable task) {
+        MenuAction(String id, int icon, String label, boolean enabled, Runnable task) {
+            this.id = id;
             this.icon = icon;
             this.label = label;
             this.enabled = enabled;
@@ -1523,9 +1969,16 @@ public class BrowserActivity extends AppCompatActivity {
     }
 
     private void showMenu() {
+        if (menuDialog != null) {
+            return;
+        }
         if (editingAddress) {
             hideKeyboard();
             endEdit();
+        }
+        if (barHidden) {
+            barHidden = false;
+            updateBottomBarLift();
         }
         final android.app.Dialog dialog = new android.app.Dialog(this);
         dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
@@ -1551,6 +2004,7 @@ public class BrowserActivity extends AppCompatActivity {
             sheet.setBackground(sheetBg);
         }
         sheet.setPadding(dp(8), dp(14), dp(8), 0);
+        sheet.setClickable(true);
 
         final List<List<MenuAction>> pages = buildMenuPages();
         final int[] currentPage = {0};
@@ -1565,36 +2019,7 @@ public class BrowserActivity extends AppCompatActivity {
         dots.setPadding(0, dp(2), 0, dp(2));
         final List<View> dotViews = new ArrayList<>();
 
-        // 挂在每个格子上：格子可点击会吞掉父容器的滑动事件
-        final float[] swipeStart = new float[2];
         final Runnable[] closeRef = new Runnable[1];
-        final View.OnTouchListener[] swipeRef = new View.OnTouchListener[1];
-        swipeRef[0] = (v, event) -> {
-            if (event.getAction() == MotionEvent.ACTION_DOWN) {
-                swipeStart[0] = event.getX();
-                swipeStart[1] = event.getY();
-            } else if (event.getAction() == MotionEvent.ACTION_UP) {
-                float dx = event.getX() - swipeStart[0];
-                float dy = event.getY() - swipeStart[1];
-                if (dy > dp(40) && Math.abs(dy) > Math.abs(dx) * 1.2f) {
-                    if (closeRef[0] != null) {
-                        closeRef[0].run();
-                    }
-                    return true;
-                }
-                if (Math.abs(dx) > dp(48) && Math.abs(dx) > Math.abs(dy) * 1.5f) {
-                    int next = currentPage[0] + (dx < 0 ? 1 : -1);
-                    if (next >= 0 && next < pages.size()) {
-                        currentPage[0] = next;
-                        renderMenuPage(grid, dotViews, pages.get(next), next, dialog, swipeRef[0]);
-                    }
-                    return true;
-                }
-            }
-            // 非可点击容器需接管 DOWN，否则收不到后续 UP，下滑手势失效
-            return !v.isClickable();
-        };
-        final View.OnTouchListener swipeListener = swipeRef[0];
         for (int i = 0; i < pages.size(); i++) {
             FrameLayout holder = new FrameLayout(this);
             holder.setBackground(selectableBackground());
@@ -1602,17 +2027,19 @@ public class BrowserActivity extends AppCompatActivity {
             View dot = new View(this);
             holder.addView(dot, new FrameLayout.LayoutParams(dp(5), dp(5), Gravity.CENTER));
             final int index = i;
-            holder.setOnTouchListener(swipeRef[0]);
             holder.setOnClickListener(v -> {
+                if (currentPage[0] == index) {
+                    return;
+                }
+                int direction = index > currentPage[0] ? 1 : -1;
                 currentPage[0] = index;
-                renderMenuPage(grid, dotViews, pages.get(index), index, dialog, swipeListener);
+                animateMenuPage(grid, dotViews, pages, index, dialog, direction);
             });
             dots.addView(holder, new LinearLayout.LayoutParams(dp(17), dp(17)));
             dotViews.add(dot);
         }
         sheet.addView(dots, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        dots.setOnTouchListener(swipeRef[0]);
         dots.setVisibility(pages.size() > 1 ? View.VISIBLE : View.GONE);
 
         LinearLayout footer = new LinearLayout(this);
@@ -1632,11 +2059,9 @@ public class BrowserActivity extends AppCompatActivity {
                 }), chevronParams);
         sheet.addView(footer, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        footer.setOnTouchListener(swipeRef[0]);
+        renderMenuPage(grid, dotViews, pages.get(0), 0, dialog);
 
-        renderMenuPage(grid, dotViews, pages.get(0), 0, dialog, swipeListener);
-
-        FrameLayout floating = new FrameLayout(this);
+        MenuGestureLayout floating = new MenuGestureLayout(this);
         floating.setClipChildren(false);
         floating.setClipToPadding(false);
         final GlassShadowView menuShadow;
@@ -1651,7 +2076,8 @@ public class BrowserActivity extends AppCompatActivity {
         }
         View anchorBar = homeBar != null && homeBar.getVisibility() == View.VISIBLE
                 ? homeBar : bottomBar;
-        int barHeight = anchorBar == null ? dp(200) : anchorBar.getHeight();
+        int barHeight = anchorBar == null || anchorBar.getHeight() <= 0
+                ? dp(56) : anchorBar.getHeight();
         int barMargin = Glass.floatingToolbar() ? dp(Glass.toolbarMargin()) : 0;
         final int sidePadding = dp(14);
         floating.setPadding(sidePadding, 0, sidePadding, 0);
@@ -1665,14 +2091,60 @@ public class BrowserActivity extends AppCompatActivity {
             if (!dialog.isShowing()) {
                 return;
             }
-            sheet.animate().translationY(dp(26)).alpha(0f).setDuration(160)
+            float distance = Math.max(0f, sheet.getTranslationY()) + dp(70);
+            sheet.animate().translationY(distance).alpha(0f).setDuration(160)
                     .withEndAction(dialog::dismiss).start();
             if (menuShadow != null) {
-                menuShadow.animate().translationY(dp(26)).alpha(0f).setDuration(160).start();
+                menuShadow.animate().translationY(distance).alpha(0f).setDuration(160).start();
             }
         };
         closeRef[0] = closeMenu;
         floating.setOnClickListener(v -> closeMenu.run());
+        floating.setCallback(new MenuGestureLayout.Callback() {
+            @Override
+            public void onHorizontal(float dx) {
+                if (pages.size() > 1) {
+                    grid.setTranslationX(dx * 0.32f);
+                }
+            }
+
+            @Override
+            public void onPageSwipe(float dx) {
+                if (pages.size() <= 1) {
+                    return;
+                }
+                int direction = dx < 0 ? 1 : -1;
+                int next = currentPage[0] + direction;
+                if (Math.abs(dx) < dp(36) || next < 0 || next >= pages.size()) {
+                    grid.animate().translationX(0f).setDuration(120).start();
+                    return;
+                }
+                currentPage[0] = next;
+                animateMenuPage(grid, dotViews, pages, next, dialog, direction);
+            }
+
+            @Override
+            public void onDrag(float dy) {
+                sheet.setTranslationY(dy);
+                sheet.setAlpha(1f - Math.min(0.45f,
+                        dy / Math.max(1f, sheet.getHeight()) * 0.8f));
+                if (menuShadow != null) {
+                    menuShadow.setTranslationY(dy);
+                }
+            }
+
+            @Override
+            public void onDragRelease(float dy, float velocityY) {
+                if (dy > dp(88) || velocityY > 1100f) {
+                    closeMenu.run();
+                    return;
+                }
+                sheet.animate().translationY(0f).alpha(1f).setDuration(160).start();
+                if (menuShadow != null) {
+                    menuShadow.animate().translationY(0f).alpha(1f).setDuration(160).start();
+                }
+            }
+        });
         if (Build.VERSION.SDK_INT >= 21) {
             sheet.setElevation(dp(menuGlass != null ? 0 : 24));
             sheet.setClipToOutline(false);
@@ -1714,30 +2186,41 @@ public class BrowserActivity extends AppCompatActivity {
             menuGlass.setOnBuilt(() -> sheet.post(placeMenuShadow));
         }
         dialog.setContentView(floating);
-        dialog.setOnShowListener(d -> {
-            android.view.Window w = dialog.getWindow();
-            if (w != null) {
-                w.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(
-                        android.graphics.Color.TRANSPARENT));
-                w.setLayout(ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.MATCH_PARENT);
-                w.setDimAmount(0f);
-                w.clearFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND);
-                w.setGravity(Gravity.BOTTOM);
-                if (Glass.frosted()) {
-                    Glass.applyWindowBlur(w);
-                }
+        menuDialog = dialog;
+        // 窗口参数必须在 show() 之前设置，否则首帧会按默认居中小窗绘制，
+        // 出现先闪到一侧再跳到正确位置的跳变。
+        android.view.Window menuWindow = dialog.getWindow();
+        if (menuWindow != null) {
+            menuWindow.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(
+                    android.graphics.Color.TRANSPARENT));
+            menuWindow.setLayout(ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT);
+            menuWindow.setDimAmount(0f);
+            menuWindow.clearFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+            menuWindow.setGravity(Gravity.BOTTOM);
+            menuWindow.setWindowAnimations(0);
+            if (Glass.frosted()) {
+                Glass.applyWindowBlur(menuWindow);
             }
-            sheet.setTranslationY(dp(26));
+        }
+        floating.setAlpha(0f);
+        sheet.setTranslationY(dp(26));
+        if (menuShadow != null) {
+            menuShadow.setTranslationY(dp(26));
+        }
+        dialog.setOnShowListener(d -> {
+            floating.animate().alpha(1f).setDuration(120).start();
             sheet.animate().translationY(0f).setDuration(200).start();
             if (menuShadow != null) {
-                menuShadow.setTranslationY(dp(26));
                 menuShadow.animate().translationY(0f).setDuration(200).start();
             }
         });
-        if (menuGlass != null) {
-            dialog.setOnDismissListener(d -> menuGlass.release());
-        }
+        dialog.setOnDismissListener(d -> {
+            menuDialog = null;
+            if (menuGlass != null) {
+                menuGlass.release();
+            }
+        });
         dialog.show();
         if (menuGlass != null) {
             sheet.post(menuGlass::refresh);
@@ -1751,79 +2234,140 @@ public class BrowserActivity extends AppCompatActivity {
 
     private List<List<MenuAction>> buildMenuPages(boolean applyHidden) {
         boolean content = hasContentPage();
-        if (applyHidden && Glass.menuSimple()) {
-            List<MenuAction> simple = new ArrayList<>();
-            simple.add(new MenuAction(R.drawable.ic_moon, "夜间模式", true, this::toggleNightMode));
-            simple.add(new MenuAction(R.drawable.ic_star, "书签", true,
-                    () -> openUrl("v://bookmarks", false)));
-            simple.add(new MenuAction(R.drawable.ic_history, "历史", true,
-                    () -> openUrl("v://history", false)));
-            simple.add(new MenuAction(R.drawable.ic_download, "下载", true, this::openDownloads));
-            simple.add(new MenuAction(R.drawable.ic_settings, "设置", true, this::openSettings));
-            List<List<MenuAction>> pages = new ArrayList<>();
-            pages.add(simple);
-            return pages;
-        }
-        java.util.Set<String> hidden =
-                Prefs.get().getStringSet("menu_hidden", new java.util.HashSet<>());
-
-        List<MenuAction> first = new ArrayList<>();
-        first.add(new MenuAction(R.drawable.ic_moon, "夜间模式", true, this::toggleNightMode));
-        first.add(new MenuAction(R.drawable.ic_star, "书签", true,
-                () -> openUrl("v://bookmarks", false)));
-        first.add(new MenuAction(R.drawable.ic_history, "历史", true,
-                () -> openUrl("v://history", false)));
-        first.add(new MenuAction(R.drawable.ic_download, "下载", true, this::openDownloads));
-        first.add(new MenuAction(R.drawable.ic_visibility_off, "隐身", true,
-                () -> newTab(Prefs.homepage(), true)));
-        first.add(new MenuAction(R.drawable.ic_share, "分享", true, this::sharePage));
-        first.add(new MenuAction(R.drawable.ic_star_filled, "添加书签", true, this::toggleBookmark));
-        first.add(new MenuAction(R.drawable.ic_desktop, "电脑模式", true, this::uaDialog));
-        first.add(new MenuAction(R.drawable.ic_toolbox, "工具箱", true, this::toolboxDialog));
-        first.add(new MenuAction(R.drawable.ic_settings, "设置", true, this::openSettings));
-
-        List<MenuAction> second = new ArrayList<>();
-        second.add(new MenuAction(R.drawable.ic_search, "页内查找", true, this::showFindBar));
-        second.add(new MenuAction(R.drawable.ic_save, "保存", content, this::saveOffline));
-        second.add(new MenuAction(R.drawable.ic_offline, "离线页面", true, this::showOfflinePages));
-        second.add(new MenuAction(R.drawable.ic_translate, "翻译", content,
-                this::translateSelection));
-        second.add(new MenuAction(R.drawable.ic_source, "源码", content, this::viewSource));
-        second.add(new MenuAction(R.drawable.ic_fullscreen, "全屏", true, this::toggleFullscreen));
-        second.add(new MenuAction(R.drawable.ic_image, "有图模式", true, this::toggleImages));
-        second.add(new MenuAction(R.drawable.ic_wave_square, "资源嗅探", true,
-                () -> startActivity(new Intent(this, MediaListActivity.class))));
-        second.add(new MenuAction(R.drawable.ic_shield_check, "网站设定", true,
-                this::siteSettingsDialog));
-        second.add(new MenuAction(R.drawable.ic_log, "网络日志", true, this::showNetLog));
-
-        List<MenuAction> third = new ArrayList<>();
-        third.add(new MenuAction(R.drawable.ic_scan, "扫描二维码", true, this::startScan));
-        third.add(new MenuAction(R.drawable.ic_shortcut, "添加到桌面", true, this::addShortcut));
-        third.add(new MenuAction(R.drawable.ic_tts, "朗读网页", content, this::readAloud));
-        third.add(new MenuAction(R.drawable.ic_ai, "AI", true, this::askAi));
-        third.add(new MenuAction(R.drawable.ic_rotate, "屏幕方向", true, this::orientationDialog));
-        third.add(new MenuAction(R.drawable.ic_block, "广告拦截", true, this::toggleAdBlock));
-        third.add(new MenuAction(R.drawable.ic_edit, "标记广告", content, this::markAd));
-        third.add(new MenuAction(R.drawable.ic_font, "字体大小", content, this::showZoomDialog));
-        third.add(new MenuAction(R.drawable.ic_report, "举报网站", content, this::reportSite));
-        third.add(new MenuAction(R.drawable.ic_tune, "定制菜单", true, this::customizeMenu));
-
-        List<List<MenuAction>> pages = new ArrayList<>();
-        pages.add(first);
-        pages.add(second);
-        pages.add(third);
-        if (applyHidden) {
-            for (List<MenuAction> page : pages) {
-                for (int i = page.size() - 1; i >= 0; i--) {
-                    MenuAction action = page.get(i);
-                    if (!"定制菜单".equals(action.label) && hidden.contains(action.label)) {
-                        page.remove(i);
-                    }
-                }
+        Set<String> hidden = MenuDefs.hiddenIds();
+        int limit = applyHidden && Glass.menuSimple()
+                ? MenuDefs.SIMPLE_COUNT : Integer.MAX_VALUE;
+        List<MenuAction> actions = new ArrayList<>();
+        for (String id : MenuDefs.order()) {
+            if (applyHidden && !MenuDefs.CUSTOMIZE_ID.equals(id) && hidden.contains(id)) {
+                continue;
+            }
+            MenuAction action = buildMenuAction(id, content);
+            if (action == null) {
+                continue;
+            }
+            actions.add(action);
+            if (actions.size() >= limit) {
+                break;
             }
         }
+        if (actions.isEmpty()) {
+            actions.add(buildMenuAction(MenuDefs.CUSTOMIZE_ID, content));
+        }
+        List<List<MenuAction>> pages = new ArrayList<>();
+        if (applyHidden && Glass.menuSimple()) {
+            pages.add(actions);
+            return pages;
+        }
+        for (int start = 0; start < actions.size(); start += MenuDefs.PAGE_SIZE) {
+            pages.add(new ArrayList<>(actions.subList(start,
+                    Math.min(actions.size(), start + MenuDefs.PAGE_SIZE))));
+        }
         return pages;
+    }
+
+    private MenuAction buildMenuAction(String id, boolean content) {
+        MenuDefs.Item item = MenuDefs.find(id);
+        if (item == null) {
+            return null;
+        }
+        Runnable task;
+        switch (id) {
+            case "night":
+                task = this::toggleNightMode;
+                break;
+            case "bookmarks":
+                task = () -> openUrl("v://bookmarks", false);
+                break;
+            case "history":
+                task = () -> openUrl("v://history", false);
+                break;
+            case "downloads":
+                task = this::openDownloads;
+                break;
+            case "incognito":
+                task = () -> newTab(Prefs.homepage(), true);
+                break;
+            case "share":
+                task = this::sharePage;
+                break;
+            case "add_bookmark":
+                task = this::toggleBookmark;
+                break;
+            case "desktop":
+                task = this::uaDialog;
+                break;
+            case "toolbox":
+                task = this::toolboxDialog;
+                break;
+            case "settings":
+                task = this::openSettings;
+                break;
+            case "find":
+                task = this::showFindBar;
+                break;
+            case "save":
+                task = this::saveOffline;
+                break;
+            case "offline":
+                task = this::showOfflinePages;
+                break;
+            case "translate":
+                task = this::translateSelection;
+                break;
+            case "source":
+                task = this::viewSource;
+                break;
+            case "fullscreen":
+                task = this::toggleFullscreen;
+                break;
+            case "images":
+                task = this::toggleImages;
+                break;
+            case "sniffer":
+                task = () -> startActivity(new Intent(this, MediaListActivity.class));
+                break;
+            case "site_settings":
+                task = this::siteSettingsDialog;
+                break;
+            case "netlog":
+                task = this::showNetLog;
+                break;
+            case "scan":
+                task = this::startScan;
+                break;
+            case "shortcut":
+                task = this::addShortcut;
+                break;
+            case "tts":
+                task = this::readAloud;
+                break;
+            case "ai":
+                task = this::askAi;
+                break;
+            case "rotate":
+                task = this::orientationDialog;
+                break;
+            case "adblock":
+                task = this::toggleAdBlock;
+                break;
+            case "mark_ad":
+                task = this::markAd;
+                break;
+            case "font":
+                task = this::showZoomDialog;
+                break;
+            case "report":
+                task = this::reportSite;
+                break;
+            case MenuDefs.CUSTOMIZE_ID:
+                task = this::customizeMenu;
+                break;
+            default:
+                return null;
+        }
+        boolean enabled = !item.needsContent || content;
+        return new MenuAction(item.id, item.icon, item.label, enabled, task);
     }
 
     private boolean isNightActive() {
@@ -1843,24 +2387,37 @@ public class BrowserActivity extends AppCompatActivity {
                 && (url.startsWith("v://offline") || url.startsWith("v://source"));
     }
 
+    private void animateMenuPage(LinearLayout grid, List<View> dotViews,
+                                 List<List<MenuAction>> pages, int pageIndex,
+                                 android.app.Dialog dialog, int direction) {
+        int width = Math.max(grid.getWidth(), dp(260));
+        float out = direction >= 0 ? -width * 0.22f : width * 0.22f;
+        grid.animate().cancel();
+        grid.animate().translationX(out).alpha(0.2f).setDuration(90).withEndAction(() -> {
+            grid.setTranslationX(-out);
+            grid.setAlpha(0.2f);
+            renderMenuPage(grid, dotViews, pages.get(pageIndex), pageIndex, dialog);
+            grid.animate().translationX(0f).alpha(1f).setDuration(140).start();
+        }).start();
+    }
+
     private void renderMenuPage(LinearLayout grid, List<View> dotViews,
                                 List<MenuAction> actions, int pageIndex,
-                                final android.app.Dialog dialog,
-                                final View.OnTouchListener swipeListener) {
+                                final android.app.Dialog dialog) {
         grid.removeAllViews();
         LinearLayout row = null;
         for (int i = 0; i < actions.size(); i++) {
-            if (i % 5 == 0) {
+            if (i % MenuDefs.COLUMNS == 0) {
                 row = new LinearLayout(this);
                 row.setOrientation(LinearLayout.HORIZONTAL);
                 LinearLayout.LayoutParams rowParams = new LinearLayout.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
                 if (i > 0) {
-                    rowParams.topMargin = dp(14);
+                    rowParams.topMargin = dp(10);
                 }
                 grid.addView(row, rowParams);
             }
-            row.addView(menuCell(dialog, actions.get(i), swipeListener),
+            row.addView(menuCell(dialog, actions.get(i)),
                     new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         }
         for (int i = 0; i < dotViews.size(); i++) {
@@ -1872,22 +2429,20 @@ public class BrowserActivity extends AppCompatActivity {
         }
     }
 
-    private View menuCell(final android.app.Dialog dialog, final MenuAction action,
-                          final View.OnTouchListener swipeListener) {
+    private View menuCell(final android.app.Dialog dialog, final MenuAction action) {
         LinearLayout cell = new LinearLayout(this);
         cell.setOrientation(LinearLayout.VERTICAL);
         cell.setGravity(Gravity.CENTER_HORIZONTAL);
         cell.setBackground(selectableBackground());
-        cell.setPadding(dp(2), dp(12), dp(2), dp(10));
-        cell.setOnTouchListener(swipeListener);
+        cell.setPadding(dp(2), dp(10), dp(2), dp(8));
         ImageView image = new androidx.appcompat.widget.AppCompatImageView(this);
         image.setImageResource(action.icon);
         image.setColorFilter(color(R.color.on_surface));
         cell.addView(image, new LinearLayout.LayoutParams(dp(24), dp(24)));
         TextView label = new TextView(this);
         label.setText(action.label);
-        label.setTextSize(13);
-        boolean highlight = "夜间模式".equals(action.label) && isNightActive();
+        label.setTextSize(12);
+        boolean highlight = "night".equals(action.id) && isNightActive();
         label.setTextColor(color(highlight ? R.color.primary : R.color.on_surface));
         label.setGravity(Gravity.CENTER);
         label.setSingleLine(true);
@@ -2192,7 +2747,8 @@ public class BrowserActivity extends AppCompatActivity {
     private void showNetLog() {
         StringBuilder sb = new StringBuilder();
         sb.append("已拦截 ").append(AdBlock.blockedCount()).append(" 次请求\n")
-                .append("主机规则 ").append(AdBlock.ruleCount()).append(" 条\n");
+                .append("规则 ").append(AdBlock.ruleCount()).append(" 条\n")
+                .append(AdBlock.statsSummary()).append('\n');
         List<String> recent = AdBlock.recentBlocks();
         if (!recent.isEmpty()) {
             sb.append("\n最近拦截：\n");
@@ -2306,33 +2862,78 @@ public class BrowserActivity extends AppCompatActivity {
         if (web == null) {
             return;
         }
+        pickerActive = true;
+        web.postDelayed(() -> pickerActive = false, 16000);
         web.evaluateJavascript(
                 "(function(){if(window.__hAdPick)return;window.__hAdPick=1;"
                         + "var bar=document.createElement('div');"
-                        + "bar.textContent='点击要隐藏的广告元素';"
-                        + "bar.style.cssText='position:fixed;left:0;right:0;bottom:0;z-index:2147483647;"
-                        + "padding:12px;text-align:center;font:14px sans-serif;color:#fff;"
-                        + "background:rgba(0,0,0,.85)';"
-                        + "document.body.appendChild(bar);"
-                        + "function sel(el){var p=[];while(el&&el.nodeType===1){"
-                        + "var s=el.tagName.toLowerCase();if(el.id){p.unshift(s+'#'+el.id);break;}"
-                        + "var c=el.className&&el.className.toString?el.className.toString().trim():'';"
-                        + "if(c){s+='.'+c.split(/\\s+/).slice(0,2).join('.');}"
-                        + "var n=1,prev=el;while((prev=prev.previousElementSibling)){"
-                        + "if(prev.tagName===el.tagName)n++;}"
-                        + "s+=':nth-of-type('+n+')';p.unshift(s);el=el.parentElement;}"
-                        + "return p.join(' > ');}"
-                        + "document.addEventListener('click',function(e){"
-                        + "e.preventDefault();e.stopPropagation();"
-                        + "var el=e.target;if(!el||!el.style)return;var s=sel(el);"
-                        + "el.style.setProperty('display','none','important');"
-                        + "try{var a=JSON.parse(localStorage.getItem('h_ad_rules')||'[]');"
-                        + "a.push(s);localStorage.setItem('h_ad_rules',JSON.stringify(a));}catch(x){}"
-                        + "window.__hAdPick=0;if(bar.parentNode)bar.parentNode.removeChild(bar);},true);"
-                        + "setTimeout(function(){window.__hAdPick=0;"
-                        + "if(bar.parentNode)bar.parentNode.removeChild(bar);},8000);})()",
+                        + "bar.textContent='点击要隐藏的广告元素，点此提示条退出';"
+                        + "bar.style.cssText='position:fixed;left:12px;right:12px;"
+                        + "top:calc(env(safe-area-inset-top,0px) + 12px);z-index:2147483647;"
+                        + "padding:12px 14px;border-radius:14px;text-align:center;"
+                        + "font:14px -apple-system,sans-serif;color:#fff;background:rgba(20,24,26,.92);"
+                        + "box-shadow:0 6px 24px rgba(0,0,0,.35)';"
+                        + "document.documentElement.appendChild(bar);"
+                        + "function escId(v){return String(v).replace(/([^a-zA-Z0-9_-])/g,'\\\\$1');}"
+                        + "function stable(c){return c&&c.length<40&&/^[a-zA-Z0-9_-]+$/.test(c);}"
+                        + "function sel(el){var parts=[],node=el,d=0;"
+                        + "while(node&&node.nodeType===1&&d<5){var s=node.tagName.toLowerCase();"
+                        + "if(node.id){var test='#'+escId(node.id);try{"
+                        + "if(document.querySelectorAll(test).length===1){parts.unshift(test);break;}}catch(x){}}"
+                        + "var cls=[];for(var i=0;i<node.classList.length&&cls.length<2;i++){"
+                        + "if(stable(node.classList[i]))cls.push(node.classList[i]);}"
+                        + "if(cls.length)s+='.'+cls.join('.');"
+                        + "var p=node.parentElement;if(p){var same=0,idx=0;"
+                        + "for(var j=0;j<p.children.length;j++){var c=p.children[j];"
+                        + "if(c.tagName===node.tagName){same++;if(c===node)idx=same;}}"
+                        + "if(same>1)s+=':nth-of-type('+idx+')';}"
+                        + "parts.unshift(s);var cand=parts.join(' > ');"
+                        + "try{if(document.querySelectorAll(cand).length<=3)return cand;}catch(x){}"
+                        + "node=p;d++;}return parts.join(' > ')||el.tagName.toLowerCase();}"
+                        + "function done(){window.__hAdPick=0;"
+                        + "if(bar.parentNode)bar.parentNode.removeChild(bar);"
+                        + "document.removeEventListener('click',pick,true);}"
+                        + "function pick(e){"
+                        + "if(e.target===bar||bar.contains(e.target)){e.preventDefault();"
+                        + "e.stopPropagation();done();return;}"
+                        + "e.preventDefault();e.stopPropagation();var el=e.target;"
+                        + "if(!el||el.nodeType!==1)return;var s=sel(el);"
+                        + "try{el.style.setProperty('display','none','important');}catch(x){}"
+                        + "try{HNative.saveAdRule(location.hostname,s);}catch(x){}done();}"
+                        + "document.addEventListener('click',pick,true);setTimeout(done,15000);})()",
                 null);
-        toast("标记模式：点击广告元素即可隐藏");
+        toast("标记模式：点选广告元素，点击顶部提示条退出");
+    }
+
+    public void saveAdRule(String host, String selector) {
+        if (!pickerActive) {
+            return;
+        }
+        Tab tab = currentTab();
+        if (tab == null || tab.web == null) {
+            return;
+        }
+        String currentHost = UrlUtils.host(tab.url);
+        if (currentHost.isEmpty() || host == null
+                || !currentHost.equalsIgnoreCase(host.trim())) {
+            return;
+        }
+        pickerActive = false;
+        final WebView web = tab.web;
+        final String url = tab.url;
+        new Thread(() -> {
+            boolean ok = AdBlock.saveUserRule(BrowserActivity.this, currentHost, selector);
+            runOnUiThread(() -> {
+                if (!ok) {
+                    toast("规则无效或已达 500 条上限");
+                    return;
+                }
+                toast("已保存广告规则");
+                if (web != null && url != null) {
+                    web.evaluateJavascript(AdBlock.injectScript(url), null);
+                }
+            });
+        }, "adblock-save-rule").start();
     }
 
     private void reportSite() {
@@ -2345,37 +2946,7 @@ public class BrowserActivity extends AppCompatActivity {
     }
 
     private void customizeMenu() {
-        final List<List<MenuAction>> pages = buildMenuPages(false);
-        final List<String> labels = new ArrayList<>();
-        for (List<MenuAction> page : pages) {
-            for (MenuAction action : page) {
-                if (!"定制菜单".equals(action.label)) {
-                    labels.add(action.label);
-                }
-            }
-        }
-        java.util.Set<String> hidden =
-                Prefs.get().getStringSet("menu_hidden", new java.util.HashSet<>());
-        final boolean[] checked = new boolean[labels.size()];
-        for (int i = 0; i < labels.size(); i++) {
-            checked[i] = !hidden.contains(labels.get(i));
-        }
-        new MaterialAlertDialogBuilder(this)
-                .setTitle("定制菜单")
-                .setMultiChoiceItems(labels.toArray(new String[0]), checked,
-                        (d, which, isChecked) -> checked[which] = isChecked)
-                .setPositiveButton("保存", (d, w) -> {
-                    java.util.Set<String> hide = new java.util.HashSet<>();
-                    for (int i = 0; i < labels.size(); i++) {
-                        if (!checked[i]) {
-                            hide.add(labels.get(i));
-                        }
-                    }
-                    Prefs.get().edit().putStringSet("menu_hidden", hide).apply();
-                    toast("菜单已更新");
-                })
-                .setNegativeButton("取消", null)
-                .show();
+        MenuDefs.showEditor(this, () -> toast("菜单已更新"));
     }
 
     private void toggleNightMode() {
@@ -2458,6 +3029,84 @@ public class BrowserActivity extends AppCompatActivity {
             action.run();
         });
         parent.addView(row);
+    }
+
+    private TextView sheetTitle(LinearLayout list, String title, String subtitle) {
+        LinearLayout head = new LinearLayout(this);
+        head.setOrientation(LinearLayout.VERTICAL);
+        head.setPadding(dp(18), dp(16), dp(18), dp(8));
+        TextView name = new TextView(this);
+        name.setText(title);
+        name.setTextSize(18);
+        name.setTextColor(color(R.color.on_surface));
+        head.addView(name);
+        if (subtitle != null && !subtitle.isEmpty()) {
+            TextView sub = new TextView(this);
+            sub.setText(subtitle);
+            sub.setTextSize(13);
+            sub.setTextColor(color(R.color.on_surface_variant));
+            sub.setPadding(0, dp(6), 0, 0);
+            head.addView(sub);
+        }
+        list.addView(head);
+        return name;
+    }
+
+    private void sheetToggle(LinearLayout list, int icon, String text, String subtitle,
+                             boolean checked, java.util.function.Consumer<Boolean> change) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setMinimumHeight(dp(56));
+        row.setPadding(dp(18), dp(6), dp(18), dp(6));
+        row.setBackground(selectableBackground());
+        ImageView image = new androidx.appcompat.widget.AppCompatImageView(this);
+        image.setImageResource(icon);
+        row.addView(image, new LinearLayout.LayoutParams(dp(24), dp(24)));
+        LinearLayout texts = new LinearLayout(this);
+        texts.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams textsParams = new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        textsParams.setMarginStart(dp(16));
+        TextView label = new TextView(this);
+        label.setText(text);
+        label.setTextSize(16);
+        label.setTextColor(color(R.color.on_surface));
+        texts.addView(label);
+        if (subtitle != null && !subtitle.isEmpty()) {
+            TextView sub = new TextView(this);
+            sub.setText(subtitle);
+            sub.setTextSize(12);
+            sub.setTextColor(color(R.color.on_surface_variant));
+            sub.setPadding(0, dp(2), 0, 0);
+            texts.addView(sub);
+        }
+        row.addView(texts, textsParams);
+        android.widget.Switch toggle = new android.widget.Switch(this);
+        toggle.setChecked(checked);
+        toggle.setClickable(false);
+        toggle.setFocusable(false);
+        row.addView(toggle, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        row.setOnClickListener(v -> {
+            toggle.setChecked(!toggle.isChecked());
+            change.accept(toggle.isChecked());
+        });
+        list.addView(row);
+    }
+
+    private void sheetButtonRow(LinearLayout list, String text, int textColor, Runnable action) {
+        TextView button = new TextView(this);
+        button.setText(text);
+        button.setTextSize(15);
+        button.setGravity(Gravity.CENTER);
+        button.setMinHeight(dp(48));
+        button.setTextColor(textColor);
+        button.setBackground(selectableBackground());
+        button.setPadding(dp(16), dp(12), dp(16), dp(12));
+        button.setOnClickListener(v -> action.run());
+        list.addView(button, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
     }
 
     private void showTabs() {
@@ -2879,6 +3528,26 @@ public class BrowserActivity extends AppCompatActivity {
         if (requestCode == 2002 && grantResults.length > 0
                 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
             startActivityForResult(new Intent(this, ScanActivity.class), REQ_SCAN);
+            return;
+        }
+        if (requestCode == REQ_PERM_MEDIA || requestCode == REQ_PERM_LOCATION) {
+            boolean granted = grantResults.length > 0;
+            for (int result : grantResults) {
+                if (result != PackageManager.PERMISSION_GRANTED) {
+                    granted = false;
+                }
+            }
+            Runnable grant = pendingPermGrant;
+            Runnable deny = pendingPermDeny;
+            pendingPermGrant = null;
+            pendingPermDeny = null;
+            if (granted) {
+                if (grant != null) {
+                    grant.run();
+                }
+            } else if (deny != null) {
+                deny.run();
+            }
         }
     }
 
@@ -3065,8 +3734,32 @@ public class BrowserActivity extends AppCompatActivity {
         if (refreshLayout != null) {
             refreshLayout.setEnabled(Prefs.pullRefresh());
         }
+        boolean webDark = Prefs.webDark();
+        if (webDarkApplied == null) {
+            webDarkApplied = webDark;
+        } else if (webDarkApplied != webDark) {
+            webDarkApplied = webDark;
+            applyWebDarkToTabs(true);
+        }
         applyToolbarStyle();
+        String signature = (PrivacyPrefs.dnt() ? "1" : "0")
+                + (PrivacyPrefs.blockWebRtc() ? "1" : "0")
+                + (PrivacyPrefs.fingerprintMaster() ? "1" : "0")
+                + (PrivacyPrefs.fingerprint("canvas") ? "1" : "0")
+                + (PrivacyPrefs.fingerprint("webgl") ? "1" : "0")
+                + PrivacyPrefs.fingerprintExemptions().toString();
+        if (privacySignature == null) {
+            privacySignature = signature;
+        } else if (!privacySignature.equals(signature)) {
+            privacySignature = signature;
+            for (Tab tab : tabs) {
+                if (tab.web != null) {
+                    Injection.install(tab.web, this);
+                }
+            }
+        }
         updateHomeOverlay();
+        updateBarMode();
         updateUi();
     }
 
@@ -3220,17 +3913,30 @@ public class BrowserActivity extends AppCompatActivity {
                 return;
             }
             applySiteSettings(view, url);
-            if (!"about:blank".equals(url)) {
-                tab.url = url;
-            }
+            assignPageUrl(tab, url);
+            injectCosmetic(view, url);
             if (tab == currentTab()) {
                 progress.setProgress(0);
                 progress.setVisibility(View.VISIBLE);
                 updateAddress();
+                lastScrollY = 0;
+                if (barHidden) {
+                    barHidden = false;
+                    updateBottomBarLift();
+                }
                 if (progressiveBlur != null) {
                     progressiveBlur.onPageStarted();
                 }
             }
+        }
+
+        @Override
+        public void onPageCommitVisible(WebView view, String url) {
+            Tab tab = tabFor(view);
+            if (tab == null) {
+                return;
+            }
+            injectCosmetic(view, url);
         }
 
         @Override
@@ -3239,9 +3945,7 @@ public class BrowserActivity extends AppCompatActivity {
             if (tab == null) {
                 return;
             }
-            if (!"about:blank".equals(url)) {
-                tab.url = url;
-            }
+            assignPageUrl(tab, url);
             String title = view.getTitle();
             if (title != null && !"about:blank".equals(title)) {
                 tab.title = title;
@@ -3257,13 +3961,6 @@ public class BrowserActivity extends AppCompatActivity {
                 injectCosmetic(view, url);
                 UserScripts.inject(view, url);
                 view.evaluateJavascript(LINK_JS, null);
-                view.evaluateJavascript(
-                        "(function(){try{var a=JSON.parse(localStorage.getItem('h_ad_rules')||'[]');"
-                                + "if(!a.length)return;var st=document.getElementById('h-ad-rules');"
-                                + "if(!st){st=document.createElement('style');st.id='h-ad-rules';"
-                                + "(document.head||document.documentElement).appendChild(st);}"
-                                + "st.textContent=a.join(',')+'{display:none!important}';}"
-                                + "catch(e){}})()", null);
             }
             if (tab == currentTab()) {
                 progress.setVisibility(View.GONE);
@@ -3281,7 +3978,7 @@ public class BrowserActivity extends AppCompatActivity {
 
         @Override
         public WebResourceResponse shouldInterceptRequest(WebView view, String url) {
-            return intercept(url, false);
+            return intercept(view, url, false);
         }
 
         @Override
@@ -3299,14 +3996,47 @@ public class BrowserActivity extends AppCompatActivity {
         }
 
         @Override
-        public void onReceivedSslError(WebView view, final SslErrorHandler handler, SslError error) {
+        public void onReceivedSslError(WebView view, final SslErrorHandler handler, final SslError error) {
+            final String host = UrlUtils.host(error.getUrl());
+            Tab tab = tabFor(view);
+            final boolean incognito = tab != null && tab.incognito;
+            if (SslExceptionStore.allows(host, error, incognito)) {
+                handler.proceed();
+                return;
+            }
+            if (sslDialogShowing) {
+                handler.cancel();
+                return;
+            }
+            sslDialogShowing = true;
+            String fingerprint = SslExceptionStore.fingerprint(error);
+            String shortFingerprint = fingerprint.length() > 32
+                    ? fingerprint.substring(0, 32) + "…" : fingerprint;
+            String message = "站点：" + (host.isEmpty() ? "未知" : host) + "\n"
+                    + "问题：" + SslExceptionStore.errorName(error.getPrimaryError()) + "\n"
+                    + "证书 SHA-256：\n" + (shortFingerprint.isEmpty() ? "无法读取" : shortFingerprint)
+                    + "\n\n继续访问可能导致密码或数据被窃取。本次放行只在当前会话对相同证书生效。";
             new MaterialAlertDialogBuilder(BrowserActivity.this)
                     .setTitle("安全警告")
-                    .setMessage("此网站的证书存在问题。继续访问可能有风险。")
-                    .setPositiveButton("继续", (d, w) -> handler.proceed())
-                    .setNegativeButton("取消", (d, w) -> handler.cancel())
+                    .setMessage(message)
+                    .setPositiveButton("返回", (d, w) -> handler.cancel())
+                    .setNegativeButton("仍要继续", (d, w) -> {
+                        SslExceptionStore.remember(host, error, incognito);
+                        handler.proceed();
+                    })
                     .setCancelable(false)
+                    .setOnDismissListener(d -> sslDialogShowing = false)
                     .show();
+        }
+
+        @Override
+        public void onReceivedHttpAuthRequest(WebView view, HttpAuthHandler handler,
+                                              String host, String realm) {
+            if (WebViewProxy.shouldAutoAuth(host)) {
+                handler.proceed(WebViewProxy.authUser(), WebViewProxy.authPass());
+                return;
+            }
+            super.onReceivedHttpAuthRequest(view, handler, host, realm);
         }
 
         boolean handleNavigation(WebView view, String url) {
@@ -3326,18 +4056,25 @@ public class BrowserActivity extends AppCompatActivity {
             } catch (Throwable ignored) {
             }
             if ("http".equals(scheme) || "https".equals(scheme) || "about".equals(scheme)
-                    || "blob".equals(scheme) || "data".equals(scheme) || "file".equals(scheme)
+                    || "blob".equals(scheme) || "data".equals(scheme)
                     || "javascript".equals(scheme)) {
                 if ("http".equals(scheme) || "https".equals(scheme)) {
+                    String target = PrivacyNav.upgrade(PrivacyNav.strip(url));
+                    if (!target.equals(url)) {
+                        view.loadUrl(target, PrivacyNav.headers());
+                        return true;
+                    }
                     applySiteSettings(view, url);
                 }
                 return false;
             }
-            try {
-                Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
-                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                startActivity(intent);
-            } catch (Throwable ignored) {
+            if ("mailto".equals(scheme) || "tel".equals(scheme) || "sms".equals(scheme)) {
+                try {
+                    Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    startActivity(intent);
+                } catch (Throwable ignored) {
+                }
             }
             return true;
         }
@@ -3351,24 +4088,101 @@ public class BrowserActivity extends AppCompatActivity {
 
         @Override
         public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
-            return intercept(request.getUrl().toString(), request.isForMainFrame());
+            return intercept(view, request.getUrl().toString(), request.isForMainFrame());
         }
     }
 
-    private WebResourceResponse intercept(String url, boolean mainFrame) {
+    private WebResourceResponse intercept(WebView view, String url, boolean mainFrame) {
         if (url == null || url.startsWith("v://")) {
             return null;
         }
         if (UrlUtils.isMedia(url)) {
             MediaSniffer.add(url);
         }
-        if (!mainFrame && siteAdAllowed(url) && AdBlock.shouldBlock(url)) {
-            return new WebResourceResponse("text/plain", "utf-8", new ByteArrayInputStream(new byte[0]));
+        Tab tab = tabFor(view);
+        String pageUrl = tab != null && tab.url != null ? tab.url : view.getUrl();
+        boolean incognito = tab != null && tab.incognito;
+        if (!mainFrame && siteAdAllowed(pageUrl)
+                && AdBlock.shouldBlock(url, pageUrl, false, incognito)) {
+            return blockedResponse(url);
         }
         return null;
     }
 
+    private WebResourceResponse blockedResponse(String url) {
+        String type = com.h.browser.adblock.Rules.requestType(url);
+        String mime;
+        switch (type) {
+            case "image":
+                mime = "image/png";
+                break;
+            case "script":
+                mime = "application/javascript";
+                break;
+            case "stylesheet":
+                mime = "text/css";
+                break;
+            case "media":
+                mime = "video/mp4";
+                break;
+            case "font":
+                mime = "font/woff2";
+                break;
+            default:
+                mime = "text/plain";
+                break;
+        }
+        return new WebResourceResponse(mime, "utf-8",
+                new ByteArrayInputStream(new byte[0]));
+    }
+
     private class HChrome extends WebChromeClient {
+        final WebView hostView;
+
+        HChrome(WebView view) {
+            hostView = view;
+        }
+
+        @Override
+        public void onGeolocationPermissionsShowPrompt(final String origin,
+                                                       final GeolocationPermissions.Callback callback) {
+            final String host = UrlUtils.host(origin);
+            if (host.isEmpty()) {
+                callback.invoke(origin, false, false);
+                return;
+            }
+            int mode = PermissionStore.mode(BrowserActivity.this, "geolocation", host);
+            if (mode == PermissionStore.ALLOW) {
+                grantLocation(origin, callback, null);
+                return;
+            }
+            if (mode == PermissionStore.DENY) {
+                callback.invoke(origin, false, false);
+                return;
+            }
+            new MaterialAlertDialogBuilder(BrowserActivity.this)
+                    .setTitle("位置权限")
+                    .setMessage(host + " 想要获取你的位置。")
+                    .setPositiveButton("仅本次", (d, w) -> {
+                        recordSitePermission(hostView, host, "geolocation", "once");
+                        grantLocation(origin, callback, null);
+                    })
+                    .setNeutralButton("始终允许", (d, w) -> {
+                        recordSitePermission(hostView, host, "geolocation", "allow");
+                        grantLocation(origin, callback,
+                                () -> PermissionStore.set(BrowserActivity.this,
+                                        "geolocation", host, PermissionStore.ALLOW));
+                    })
+                    .setNegativeButton("拒绝", (d, w) -> {
+                        recordSitePermission(hostView, host, "geolocation", "deny");
+                        PermissionStore.set(BrowserActivity.this, "geolocation", host,
+                                PermissionStore.DENY);
+                        callback.invoke(origin, false, false);
+                    })
+                    .setOnCancelListener(d -> callback.invoke(origin, false, false))
+                    .show();
+        }
+
         @Override
         public void onProgressChanged(WebView view, int newProgress) {
             if (view == currentWeb()) {
@@ -3402,6 +4216,143 @@ public class BrowserActivity extends AppCompatActivity {
         public void openFileChooser(ValueCallback<Uri> uploadMsg, String acceptType, String capture) {
             openFileChooser(uploadMsg);
         }
+    }
+
+    @android.annotation.TargetApi(21)
+    private class HChrome21 extends HChrome {
+        HChrome21(WebView view) {
+            super(view);
+        }
+
+        @Override
+        public void onPermissionRequest(final PermissionRequest request) {
+            Uri originUri = request.getOrigin();
+            final String host = originUri == null ? "" : UrlUtils.host(originUri.toString());
+            String[] resources = request.getResources();
+            boolean video = false;
+            boolean audio = false;
+            for (String resource : resources) {
+                if (PermissionRequest.RESOURCE_VIDEO_CAPTURE.equals(resource)) {
+                    video = true;
+                } else if (PermissionRequest.RESOURCE_AUDIO_CAPTURE.equals(resource)) {
+                    audio = true;
+                }
+            }
+            if (host.isEmpty() || (!video && !audio)) {
+                denyPermissionRequest(request);
+                return;
+            }
+            final boolean wantsVideo = video;
+            final boolean wantsAudio = audio;
+            final String type = video && audio ? "camera-microphone"
+                    : video ? "camera" : "microphone";
+            int mode = PermissionStore.mode(BrowserActivity.this, type, host);
+            if (mode == PermissionStore.ALLOW) {
+                grantMediaPermission(request, host, type, wantsVideo, wantsAudio, null);
+                return;
+            }
+            if (mode == PermissionStore.DENY) {
+                denyPermissionRequest(request);
+                return;
+            }
+            String label = video && audio ? "相机和麦克风" : video ? "相机" : "麦克风";
+            new MaterialAlertDialogBuilder(BrowserActivity.this)
+                    .setTitle(label + "权限")
+                    .setMessage(host + " 想要使用你的" + label + "。")
+                    .setPositiveButton("仅本次", (d, w) -> {
+                        recordSitePermission(hostView, host, type, "once");
+                        grantMediaPermission(request, host, type, wantsVideo, wantsAudio, null);
+                    })
+                    .setNeutralButton("始终允许", (d, w) -> {
+                        recordSitePermission(hostView, host, type, "allow");
+                        grantMediaPermission(request, host, type, wantsVideo, wantsAudio,
+                                () -> PermissionStore.set(BrowserActivity.this, type, host,
+                                        PermissionStore.ALLOW));
+                    })
+                    .setNegativeButton("拒绝", (d, w) -> {
+                        recordSitePermission(hostView, host, type, "deny");
+                        PermissionStore.set(BrowserActivity.this, type, host, PermissionStore.DENY);
+                        denyPermissionRequest(request);
+                    })
+                    .setOnCancelListener(d -> denyPermissionRequest(request))
+                    .show();
+        }
+    }
+
+    private void grantLocation(final String origin,
+                               final GeolocationPermissions.Callback callback,
+                               final Runnable persist) {
+        Runnable grant = () -> {
+            if (persist != null) {
+                persist.run();
+            }
+            try {
+                callback.invoke(origin, true, false);
+            } catch (Throwable ignored) {
+            }
+        };
+        if (Build.VERSION.SDK_INT < 23
+                || hasRuntimePermission(Manifest.permission.ACCESS_FINE_LOCATION)) {
+            grant.run();
+            return;
+        }
+        pendingPermGrant = grant;
+        pendingPermDeny = () -> {
+            try {
+                callback.invoke(origin, false, false);
+            } catch (Throwable ignored) {
+            }
+        };
+        requestPermissions(new String[]{Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION}, REQ_PERM_LOCATION);
+    }
+
+    private void grantMediaPermission(final PermissionRequest request, final String host,
+                                      final String type, final boolean video, final boolean audio,
+                                      final Runnable persist) {
+        Runnable grant = () -> {
+            if (persist != null) {
+                persist.run();
+            }
+            try {
+                request.grant(request.getResources());
+            } catch (Throwable ignored) {
+            }
+        };
+        List<String> missing = new ArrayList<>();
+        if (video && !hasRuntimePermission(Manifest.permission.CAMERA)) {
+            missing.add(Manifest.permission.CAMERA);
+        }
+        if (audio && !hasRuntimePermission(Manifest.permission.RECORD_AUDIO)) {
+            missing.add(Manifest.permission.RECORD_AUDIO);
+        }
+        if (Build.VERSION.SDK_INT < 23 || missing.isEmpty()) {
+            grant.run();
+            return;
+        }
+        pendingPermGrant = grant;
+        pendingPermDeny = () -> denyPermissionRequest(request);
+        requestPermissions(missing.toArray(new String[0]), REQ_PERM_MEDIA);
+    }
+
+    private void denyPermissionRequest(PermissionRequest request) {
+        try {
+            request.deny();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private boolean hasRuntimePermission(String permission) {
+        return ContextCompat.checkSelfPermission(this, permission)
+                == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private void recordSitePermission(WebView view, String host, String type, String decision) {
+        Tab tab = view == null ? null : tabFor(view);
+        if (tab != null && tab.incognito) {
+            return;
+        }
+        PrivacyStats.recordPermission(host, type, decision);
     }
 
     private Intent fileIntent() {

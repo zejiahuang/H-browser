@@ -18,52 +18,87 @@ public class NativeBridge {
         this.activity = activity;
     }
 
+    private boolean trusted() {
+        return activity.currentPageInternal();
+    }
+
     @JavascriptInterface
     public void search(final String query) {
+        if (!trusted()) {
+            return;
+        }
         activity.runOnUiThread(() -> activity.search(query));
     }
 
     @JavascriptInterface
     public void openUrl(final String url) {
+        if (!trusted()) {
+            return;
+        }
         activity.runOnUiThread(() -> activity.openUrl(url, false));
     }
 
     @JavascriptInterface
     public void newTab(final String url) {
+        if (!trusted()) {
+            return;
+        }
         activity.runOnUiThread(() -> activity.openUrl(url, true));
     }
 
     @JavascriptInterface
     public void deleteBookmark(final long id) {
+        if (!trusted()) {
+            return;
+        }
         new Thread(() -> Db.get(activity).removeBookmark(id)).start();
     }
 
     @JavascriptInterface
     public void deleteHistory(final long id) {
+        if (!trusted()) {
+            return;
+        }
         new Thread(() -> Db.get(activity).removeHistory(id)).start();
     }
 
     @JavascriptInterface
     public void clearHistory() {
+        if (!trusted()) {
+            return;
+        }
         new Thread(() -> Db.get(activity).clearHistory()).start();
     }
 
     @JavascriptInterface
     public void clearLog() {
+        if (!trusted()) {
+            return;
+        }
         AdBlock.clearLog();
     }
 
     @JavascriptInterface
     public void updateAdblock() {
-        final String url = Prefs.adblockSubscription();
-        AdBlock.updateSubscription(activity, url, (ok, message) -> activity.runOnUiThread(() -> {
+        if (!trusted()) {
+            return;
+        }
+        AdBlock.updateAll(activity, (ok, message) -> activity.runOnUiThread(() -> {
             activity.toast(message);
             activity.reloadInternal();
         }));
     }
 
     @JavascriptInterface
+    public void saveAdRule(final String host, final String selector) {
+        activity.runOnUiThread(() -> activity.saveAdRule(host, selector));
+    }
+
+    @JavascriptInterface
     public void setThemeMode(final int mode) {
+        if (!trusted()) {
+            return;
+        }
         Prefs.get().edit().putInt("theme_mode", mode).apply();
         BaseSearchWidget.refresh(activity);
         activity.runOnUiThread(() -> {
@@ -76,6 +111,9 @@ public class NativeBridge {
 
     @JavascriptInterface
     public void setSearchEngine(final String template) {
+        if (!trusted()) {
+            return;
+        }
         if (template != null && template.contains("%s")) {
             Prefs.setSearchEngine(template);
         }
@@ -83,51 +121,81 @@ public class NativeBridge {
 
     @JavascriptInterface
     public void pickBookmarkFile() {
+        if (!trusted()) {
+            return;
+        }
         activity.runOnUiThread(activity::importBookmarksFile);
     }
 
     @JavascriptInterface
     public void exportBookmarks() {
+        if (!trusted()) {
+            return;
+        }
         activity.runOnUiThread(activity::exportBookmarksFile);
     }
 
     @JavascriptInterface
     public void exportHistory() {
+        if (!trusted()) {
+            return;
+        }
         activity.runOnUiThread(activity::exportHistoryFile);
     }
 
     @JavascriptInterface
     public void openSettings() {
+        if (!trusted()) {
+            return;
+        }
         activity.runOnUiThread(activity::openSettings);
     }
 
     @JavascriptInterface
     public void openDownloads() {
+        if (!trusted()) {
+            return;
+        }
         activity.runOnUiThread(activity::openDownloads);
     }
 
     @JavascriptInterface
     public void openVault() {
+        if (!trusted()) {
+            return;
+        }
         activity.runOnUiThread(activity::openVault);
     }
 
     @JavascriptInterface
     public void openSync() {
+        if (!trusted()) {
+            return;
+        }
         activity.runOnUiThread(activity::openSync);
     }
 
     @JavascriptInterface
     public void startScan() {
+        if (!trusted()) {
+            return;
+        }
         activity.runOnUiThread(activity::startScan);
     }
 
     @JavascriptInterface
     public void readAloud() {
+        if (!trusted()) {
+            return;
+        }
         activity.runOnUiThread(activity::readAloud);
     }
 
     @JavascriptInterface
     public void reloadPage() {
+        if (!trusted()) {
+            return;
+        }
         activity.runOnUiThread(activity::reloadInternal);
     }
 }

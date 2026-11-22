@@ -19,6 +19,14 @@ public final class UrlUtils {
         return url != null && url.startsWith("v://");
     }
 
+    public static boolean isHome(String url) {
+        if (url == null) {
+            return false;
+        }
+        return "v://home".equals(url) || url.startsWith("v://home/")
+                || url.startsWith("v://home?") || url.startsWith("v://home#");
+    }
+
     public static boolean looksLikeUrl(String input) {
         if (input == null) {
             return false;

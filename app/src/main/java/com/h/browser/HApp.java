@@ -13,7 +13,10 @@ public class HApp extends Application {
         super.onCreate();
         AppCompatDelegate.setCompatVectorFromResourcesEnabled(true);
         Prefs.init(this);
+        com.h.browser.privacy.PrivacyStats.init(this);
+        com.h.browser.net.WebViewProxy.apply();
         com.h.browser.ui.Glass.migrate();
+        com.h.browser.ui.MenuDefs.migrateLegacy();
         int mode = Prefs.get().getInt("theme_mode", 0);
         AppCompatDelegate.setDefaultNightMode(mode == 1 ? AppCompatDelegate.MODE_NIGHT_NO
                 : mode == 2 ? AppCompatDelegate.MODE_NIGHT_YES
