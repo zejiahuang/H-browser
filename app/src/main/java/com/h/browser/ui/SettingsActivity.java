@@ -85,12 +85,19 @@ public class SettingsActivity extends AppCompatActivity {
         cat = getIntent().getStringExtra("cat");
         root = Ui.screen(this);
         if (pref("settings_wallpaper")) {
+            android.graphics.drawable.Drawable wallpaper = null;
             try {
-                WallpaperManager manager = WallpaperManager.getInstance(this);
-                getWindow().setBackgroundDrawable(manager.getDrawable());
-                root.setBackgroundColor(Glass.night(this) ? 0x99000000 : 0xB8F2F7F7);
+                wallpaper = WallpaperManager.getInstance(this).getDrawable();
             } catch (Throwable ignored) {
             }
+            if (wallpaper != null) {
+                getWindow().setBackgroundDrawable(wallpaper);
+            } else {
+                getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_SHOW_WALLPAPER);
+                getWindow().setBackgroundDrawable(
+                        new android.graphics.drawable.ColorDrawable(0x00000000));
+            }
+            root.setBackgroundColor(Glass.night(this) ? 0xA6000000 : 0xAAF7F7F7);
         }
         LinearLayout top;
         if ("scripts".equals(cat)) {
@@ -128,8 +135,32 @@ public class SettingsActivity extends AppCompatActivity {
             buildCategory(cat);
         }
         if ("custom".equals(cat)) {
+            tintDesignerChrome(top);
             root.addView(buildDesignerTabs(), new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(this, 48)));
+        }
+    }
+
+    private void tintDesignerChrome(View topBar) {
+        if (!(topBar instanceof ViewGroup)) {
+            return;
+        }
+        ViewGroup outer = (ViewGroup) topBar;
+        for (int i = 0; i < outer.getChildCount(); i++) {
+            View child = outer.getChildAt(i);
+            if (child instanceof ViewGroup) {
+                ViewGroup bar = (ViewGroup) child;
+                for (int j = 0; j < bar.getChildCount(); j++) {
+                    View item = bar.getChildAt(j);
+                    if (item instanceof TextView) {
+                        ((TextView) item).setTextColor(0xFFFFFFFF);
+                    } else if (item instanceof android.widget.ImageButton) {
+                        ((android.widget.ImageButton) item).setColorFilter(0xFFFFFFFF);
+                    }
+                }
+            } else if (child.getBackground() != null) {
+                child.setBackgroundColor(0xFF3A3A3A);
+            }
         }
     }
 
@@ -177,7 +208,6 @@ public class SettingsActivity extends AppCompatActivity {
             row.setMinimumHeight(Ui.dp(this, 61));
             row.setPadding(Ui.dp(this, 16), 0, Ui.dp(this, 16), 0);
             TextView label = Ui.text(this, item[1], 14, R.color.on_surface_variant);
-            label.setTextColor(0xFFBFBFBF);
             row.addView(label, new LinearLayout.LayoutParams(0,
                     ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
             row.setOnClickListener(v -> startActivity(new Intent(this, SettingsActivity.class)
@@ -212,7 +242,7 @@ public class SettingsActivity extends AppCompatActivity {
 
     private GradientDrawable pill() {
         GradientDrawable bg = new GradientDrawable();
-        bg.setColor(0xFF202020);
+        bg.setColor(Glass.night(this) ? 0xFF202020 : 0xFFE9E9E9);
         bg.setCornerRadius(Ui.dp(this, 20));
         return bg;
     }
@@ -259,8 +289,7 @@ public class SettingsActivity extends AppCompatActivity {
         flat("浏览器标识", uaName(), null, this::uaDialog);
         flat("清除数据", null, null, this::clearData);
         flat("广告拦截", null, null, this::adblockDialog);
-        flat("网站设定", null, null,
-                () -> info("网站设定", "在网页中通过菜单可查看和调整当前站点设定。"));
+        flat("网站设定", null, null, this::siteSettingsOverview);
         flat("密码管理器", null, null,
                 () -> startActivity(new Intent(this, VaultActivity.class)));
         flat("夜间模式", null, null, this::themeDialog);
@@ -445,6 +474,45 @@ public class SettingsActivity extends AppCompatActivity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
     }
 
+    private void siteSettingsOverview() {
+        java.util.TreeSet<String> hosts = new java.util.TreeSet<>();
+        for (String key : Prefs.get().getAll().keySet()) {
+            if (!key.startsWith("site_") || key.length() <= 5) {
+                continue;
+            }
+            String rest = key.substring(5);
+            int underscore = rest.indexOf('_');
+            if (underscore > 0) {
+                hosts.add(rest.substring(underscore + 1));
+            }
+        }
+        if (hosts.isEmpty()) {
+            info("网站设定", "还没有站点自定义。\n\n浏览网页时打开菜单 →「网站设定」，"
+                    + "可对当前站点单独设置 JavaScript、加载图片、桌面版网页与广告拦截。");
+            return;
+        }
+        final String[] items = hosts.toArray(new String[0]);
+        new MaterialAlertDialogBuilder(this)
+                .setTitle("网站设定")
+                .setItems(items, (d, which) -> new MaterialAlertDialogBuilder(this)
+                        .setTitle(items[which])
+                        .setMessage("清除该站点的全部自定义设定？")
+                        .setPositiveButton("清除", (d2, w2) -> {
+                            String host = items[which];
+                            Prefs.get().edit()
+                                    .remove("site_js_" + host)
+                                    .remove("site_img_" + host)
+                                    .remove("site_ua_" + host)
+                                    .remove("site_ad_" + host).apply();
+                            toast("已清除");
+                            buildCategory("general");
+                        })
+                        .setNegativeButton("取消", null)
+                        .show())
+                .setNegativeButton("关闭", null)
+                .show();
+    }
+
     private void buildPrivacy() {
         switchFlat("不跟踪", null,
                 pref("dnt", true), value -> setPref("dnt", value));
@@ -456,6 +524,9 @@ public class SettingsActivity extends AppCompatActivity {
     }
 
     private void buildAdvanced() {
+        String trans = Prefs.transUrl().isEmpty()
+                ? "未设置（LibreTranslate / OpenAI 兼容）" : Prefs.transUrl();
+        flat("翻译接口", trans, null, this::transDialog);
         switchFlat("流量节省", "请求网站节省流量",
                 pref("data_saver"), value -> setPref("data_saver", value));
         switchFlat("自动展示嗅探按钮", null,
@@ -559,6 +630,7 @@ public class SettingsActivity extends AppCompatActivity {
         int homeBg = Prefs.get().getInt("home_bg", 0);
         bg.setColor(homeBg != 0 ? homeBg : 0xFF000000);
         bg.setCornerRadius(Ui.dp(this, 24));
+        bg.setStroke(Math.max(1, Ui.dp(this, 1)), 0x33FFFFFF);
         preview.setBackground(bg);
         HMarkView logo = new HMarkView(this);
         logo.setScale(0.94f);
@@ -574,6 +646,7 @@ public class SettingsActivity extends AppCompatActivity {
         outline.setCornerRadius(Ui.dp(this, 23));
         searchPill.setBackground(outline);
         TextView pillHint = Ui.text(this, "搜索或输入网址", 13, R.color.on_surface_variant);
+        pillHint.setTextColor(0xFFDDDDDD);
         searchPill.addView(pillHint);
         LinearLayout.LayoutParams pillParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(this, 46));
@@ -608,6 +681,7 @@ public class SettingsActivity extends AppCompatActivity {
         for (int i = 0; i < labels.length; i++) {
             final int index = i;
             TextView tab = Ui.text(this, labels[i], 14, R.color.on_surface_variant);
+            tab.setTextColor(0xFFDDDDDD);
             tab.setGravity(Gravity.CENTER);
             tab.setBackground(Ui.ripple(this));
             tab.setOnClickListener(v -> actions[index].run());
@@ -633,6 +707,7 @@ public class SettingsActivity extends AppCompatActivity {
                 .setSingleChoiceItems(labels, checked, (dialog, which) -> {
                     dialog.dismiss();
                     Prefs.get().edit().putInt("home_bg", colors[which]).apply();
+                    buildCategory("custom");
                     toast("主页背景已更新");
                 })
                 .setNegativeButton("取消", null)
@@ -954,23 +1029,50 @@ public class SettingsActivity extends AppCompatActivity {
 
     private void importFromClipboard() {
         ClipboardManager manager = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-        if (manager == null || manager.getPrimaryClip() == null
-                || manager.getPrimaryClip().getItemCount() == 0) {
-            toast("剪贴板为空");
+        String source = "";
+        if (manager != null && manager.getPrimaryClip() != null
+                && manager.getPrimaryClip().getItemCount() > 0) {
+            CharSequence text = manager.getPrimaryClip().getItemAt(0).coerceToText(this);
+            source = text == null ? "" : text.toString();
+        }
+        source = source.trim();
+        if (source.contains("==UserScript==") && installScript(source)) {
             return;
         }
-        CharSequence text = manager.getPrimaryClip().getItemAt(0).coerceToText(this);
-        String source = text == null ? "" : text.toString();
-        if (!source.contains("==UserScript==")) {
-            toast("不是有效的用户脚本");
-            return;
+        final EditText input = Ui.input(this, "用户脚本源码，需包含 ==UserScript== 元数据");
+        input.setText(source);
+        input.setSingleLine(false);
+        input.setMinLines(8);
+        input.setGravity(Gravity.TOP | Gravity.START);
+        LinearLayout wrapper = Ui.column(this);
+        int pad = Ui.dp(this, 20);
+        wrapper.setPadding(pad, Ui.dp(this, 8), pad, 0);
+        wrapper.addView(input, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(this, 260)));
+        new MaterialAlertDialogBuilder(this)
+                .setTitle("导入用户脚本")
+                .setView(wrapper)
+                .setPositiveButton("导入", (d, w) -> {
+                    if (!installScript(input.getText().toString().trim())) {
+                        toast("不是有效的用户脚本");
+                    }
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private boolean installScript(String source) {
+        if (source == null || !source.contains("==UserScript==")) {
+            return false;
         }
         try {
             UserScripts.Script script = UserScripts.install(this, source);
             toast("已安装：" + script.name);
             buildCategory("scripts");
+            return true;
         } catch (Throwable t) {
             toast("安装失败");
+            return false;
         }
     }
 

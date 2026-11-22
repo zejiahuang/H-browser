@@ -262,7 +262,7 @@ public class BrowserActivity extends AppCompatActivity {
 
         addressLead = toolButton(R.drawable.ic_search, "搜索或输入网址", v -> {
             Tab tab = currentTab();
-            if (tab != null && !UrlUtils.isInternal(tab.url)) {
+            if (tab != null && (!UrlUtils.isInternal(tab.url) || isDataPage(tab.url))) {
                 showSiteInfo();
             } else {
                 beginEdit();
@@ -365,7 +365,7 @@ public class BrowserActivity extends AppCompatActivity {
 
         addressAction = toolButton(R.drawable.ic_scan, "扫描二维码", v -> {
             Tab tab = currentTab();
-            if (tab != null && !UrlUtils.isInternal(tab.url)) {
+            if (tab != null && (!UrlUtils.isInternal(tab.url) || isDataPage(tab.url))) {
                 reloadOrStop();
             } else {
                 startScan();
@@ -882,6 +882,20 @@ public class BrowserActivity extends AppCompatActivity {
     }
 
     private void newTab(String url, boolean incognito) {
+        Tab tab = newEmptyTab(incognito);
+        if (tab == null) {
+            return;
+        }
+        loadUrl(tab, url == null || url.isEmpty() ? Prefs.homepage() : url);
+        tab.web.postDelayed(() -> {
+            if (tab.web.getContentHeight() == 0 && UrlUtils.isInternal(tab.url)
+                    && !isDataPage(tab.url)) {
+                handleInternal(tab, tab.url);
+            }
+        }, 500);
+    }
+
+    private Tab newEmptyTab(boolean incognito) {
         while (tabs.size() >= MAX_TABS) {
             int victim = current == 0 ? 1 : 0;
             closeTab(victim, false);
@@ -890,12 +904,7 @@ public class BrowserActivity extends AppCompatActivity {
         tab.web = createWebView(tab);
         tabs.add(tab);
         selectTab(tabs.size() - 1);
-        loadUrl(tab, url == null || url.isEmpty() ? Prefs.homepage() : url);
-        tab.web.postDelayed(() -> {
-            if (tab.web.getContentHeight() == 0 && UrlUtils.isInternal(tab.url)) {
-                handleInternal(tab, tab.url);
-            }
-        }, 500);
+        return tab;
     }
 
     private WebView createWebView(final Tab tab) {
@@ -1038,6 +1047,7 @@ public class BrowserActivity extends AppCompatActivity {
             handleInternal(tab, url);
             return;
         }
+        applySiteSettings(tab.web, url);
         tab.url = url;
         tab.web.loadUrl(url);
         if (tab == currentTab()) {
@@ -1051,7 +1061,7 @@ public class BrowserActivity extends AppCompatActivity {
     }
 
     private void handleInternal(Tab tab, String url) {
-        if (tab == null) {
+        if (tab == null || isDataPage(url)) {
             return;
         }
         String path = url.substring(4);
@@ -1154,7 +1164,7 @@ public class BrowserActivity extends AppCompatActivity {
         if (tab == null) {
             return;
         }
-        if (UrlUtils.isInternal(tab.url)) {
+        if (UrlUtils.isInternal(tab.url) && !isDataPage(tab.url)) {
             handleInternal(tab, tab.url);
         } else {
             tab.web.reload();
@@ -1163,7 +1173,7 @@ public class BrowserActivity extends AppCompatActivity {
 
     public void refreshCurrentIfInternal() {
         Tab tab = currentTab();
-        if (tab != null && UrlUtils.isInternal(tab.url)) {
+        if (tab != null && UrlUtils.isInternal(tab.url) && !isDataPage(tab.url)) {
             handleInternal(tab, tab.url);
         }
     }
@@ -1209,7 +1219,7 @@ public class BrowserActivity extends AppCompatActivity {
             return;
         }
         Tab tab = currentTab();
-        if (tab != null && UrlUtils.isInternal(tab.url)) {
+        if (tab != null && UrlUtils.isInternal(tab.url) && !isDataPage(tab.url)) {
             handleInternal(tab, tab.url);
         } else {
             web.reload();
@@ -1221,11 +1231,14 @@ public class BrowserActivity extends AppCompatActivity {
         if (tab == null) {
             return;
         }
-        boolean home = UrlUtils.isInternal(tab.url);
+        boolean home = UrlUtils.isInternal(tab.url) && !isDataPage(tab.url);
         if (titleView != null) {
             String title = tab.title;
             if (title == null || title.isEmpty() || title.equals(tab.url)) {
                 title = home ? "主页" : tab.url;
+            }
+            if (tab.incognito) {
+                title = "无痕 · " + title;
             }
             titleView.setText(title);
         }
@@ -1280,7 +1293,7 @@ public class BrowserActivity extends AppCompatActivity {
     }
 
     private void injectCosmetic(WebView web, String url) {
-        if (UrlUtils.isInternal(url) || !AdBlock.isEnabled()) {
+        if (UrlUtils.isInternal(url) || !AdBlock.isEnabled() || !siteAdAllowed(url)) {
             return;
         }
         String css = AdBlock.cosmeticCss(url);
@@ -1511,8 +1524,12 @@ public class BrowserActivity extends AppCompatActivity {
     }
 
     private List<List<MenuAction>> buildMenuPages() {
+        return buildMenuPages(true);
+    }
+
+    private List<List<MenuAction>> buildMenuPages(boolean applyHidden) {
         boolean content = hasContentPage();
-        if (Glass.menuSimple()) {
+        if (applyHidden && Glass.menuSimple()) {
             List<MenuAction> simple = new ArrayList<>();
             simple.add(new MenuAction(R.drawable.ic_moon, "夜间模式", true, this::toggleNightMode));
             simple.add(new MenuAction(R.drawable.ic_star, "书签", true,
@@ -1554,7 +1571,8 @@ public class BrowserActivity extends AppCompatActivity {
         second.add(new MenuAction(R.drawable.ic_image, "有图模式", true, this::toggleImages));
         second.add(new MenuAction(R.drawable.ic_wave_square, "资源嗅探", true,
                 () -> startActivity(new Intent(this, MediaListActivity.class))));
-        second.add(new MenuAction(R.drawable.ic_ua, "浏览器标识", true, this::uaDialog));
+        second.add(new MenuAction(R.drawable.ic_shield_check, "网站设定", true,
+                this::siteSettingsDialog));
         second.add(new MenuAction(R.drawable.ic_log, "网络日志", true, this::showNetLog));
 
         List<MenuAction> third = new ArrayList<>();
@@ -1573,11 +1591,13 @@ public class BrowserActivity extends AppCompatActivity {
         pages.add(first);
         pages.add(second);
         pages.add(third);
-        for (List<MenuAction> page : pages) {
-            for (int i = page.size() - 1; i >= 0; i--) {
-                MenuAction action = page.get(i);
-                if (!"定制菜单".equals(action.label) && hidden.contains(action.label)) {
-                    page.remove(i);
+        if (applyHidden) {
+            for (List<MenuAction> page : pages) {
+                for (int i = page.size() - 1; i >= 0; i--) {
+                    MenuAction action = page.get(i);
+                    if (!"定制菜单".equals(action.label) && hidden.contains(action.label)) {
+                        page.remove(i);
+                    }
                 }
             }
         }
@@ -1594,6 +1614,11 @@ public class BrowserActivity extends AppCompatActivity {
         Tab tab = currentTab();
         return tab != null && tab.web != null && !UrlUtils.isInternal(tab.url)
                 && !"v://source".equals(tab.url);
+    }
+
+    private boolean isDataPage(String url) {
+        return url != null
+                && (url.startsWith("v://offline") || url.startsWith("v://source"));
     }
 
     private void renderMenuPage(LinearLayout grid, List<View> dotViews,
@@ -1703,7 +1728,9 @@ public class BrowserActivity extends AppCompatActivity {
         }
         String[] labels = new String[files.length];
         for (int i = 0; i < files.length; i++) {
-            labels[i] = files[i].getName();
+            String name = files[i].getName().replaceAll("\\.html?$", "")
+                    .replaceAll("-\\d{10,}$", "");
+            labels[i] = name;
         }
         new MaterialAlertDialogBuilder(this)
                 .setTitle("离线页面")
@@ -1723,14 +1750,14 @@ public class BrowserActivity extends AppCompatActivity {
             }
             in.close();
             String html = new String(out.toByteArray(), StandardCharsets.UTF_8);
-            newTab(Prefs.homepage(), false);
-            Tab tab = currentTab();
+            Tab tab = newEmptyTab(false);
             if (tab == null) {
                 return;
             }
             tab.url = "v://offline";
-            tab.title = file.getName();
+            tab.title = file.getName().replaceAll("\\.html?$", "").replaceAll("-\\d{10,}$", "");
             tab.web.loadDataWithBaseURL("v://offline", html, "text/html", "utf-8", null);
+            updateAddress();
         } catch (Throwable t) {
             toast("打开失败");
         }
@@ -1752,8 +1779,7 @@ public class BrowserActivity extends AppCompatActivity {
                     }
                     String escaped = html.replace("&", "&amp;")
                             .replace("<", "&lt;").replace(">", "&gt;");
-                    newTab(Prefs.homepage(), false);
-                    Tab tab = currentTab();
+                    Tab tab = newEmptyTab(false);
                     if (tab == null) {
                         return;
                     }
@@ -1777,12 +1803,15 @@ public class BrowserActivity extends AppCompatActivity {
         controller.setSystemBarsBehavior(
                 WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
         if (fullscreen) {
-            controller.hide(WindowInsetsCompat.Type.statusBars());
+            controller.hide(WindowInsetsCompat.Type.systemBars());
         } else {
-            controller.show(WindowInsetsCompat.Type.statusBars());
+            controller.show(WindowInsetsCompat.Type.systemBars());
             applySystemBars();
         }
-        toast(fullscreen ? "全屏 已开启" : "全屏 已关闭");
+        if (bottomBar != null) {
+            bottomBar.setVisibility(fullscreen ? View.GONE : View.VISIBLE);
+        }
+        toast(fullscreen ? "全屏 已开启，返回键退出" : "全屏 已关闭");
     }
 
     private void toggleImages() {
@@ -1795,6 +1824,80 @@ public class BrowserActivity extends AppCompatActivity {
             }
         }
         toast(block ? "已切换无图模式" : "已切换有图模式");
+    }
+
+    private static final String DESKTOP_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            + "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36 H/0.1";
+
+    private void siteSettingsDialog() {
+        Tab tab = currentTab();
+        final String url = tab == null ? null : tab.url;
+        if (url == null || UrlUtils.isInternal(url) || UrlUtils.host(url).isEmpty()) {
+            toast("当前页面不支持网站设定");
+            return;
+        }
+        final String host = UrlUtils.host(url);
+        final boolean[] values = {
+                Prefs.get().getBoolean("site_js_" + host, true),
+                Prefs.get().getBoolean("site_img_" + host,
+                        !Prefs.get().getBoolean("block_images", false)),
+                Prefs.get().getBoolean("site_ua_" + host, false),
+                Prefs.get().getBoolean("site_ad_" + host, true)};
+        new MaterialAlertDialogBuilder(this)
+                .setTitle(host)
+                .setMultiChoiceItems(new String[]{"JavaScript", "加载图片", "桌面版网页", "广告拦截"},
+                        values, (d, which, checked) -> values[which] = checked)
+                .setPositiveButton("保存", (d, w) -> {
+                    Prefs.get().edit()
+                            .putBoolean("site_js_" + host, values[0])
+                            .putBoolean("site_img_" + host, values[1])
+                            .putBoolean("site_ua_" + host, values[2])
+                            .putBoolean("site_ad_" + host, values[3]).apply();
+                    applySiteSettings(tab.web, url);
+                    tab.web.reload();
+                    toast("已保存网站设定");
+                })
+                .setNeutralButton("重置", (d, w) -> {
+                    Prefs.get().edit()
+                            .remove("site_js_" + host).remove("site_img_" + host)
+                            .remove("site_ua_" + host).remove("site_ad_" + host).apply();
+                    applySiteSettings(tab.web, url);
+                    tab.web.reload();
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private boolean siteAdAllowed(String url) {
+        String host = UrlUtils.host(url);
+        return host.isEmpty() || Prefs.get().getBoolean("site_ad_" + host, true);
+    }
+
+    private void applySiteSettings(WebView web, String url) {
+        if (web == null || url == null || UrlUtils.isInternal(url)) {
+            return;
+        }
+        String host = UrlUtils.host(url);
+        if (host.isEmpty()) {
+            return;
+        }
+        android.webkit.WebSettings settings = web.getSettings();
+        settings.setJavaScriptEnabled(Prefs.get().getBoolean("site_js_" + host, true));
+        boolean images = Prefs.get().getBoolean("site_img_" + host,
+                !Prefs.get().getBoolean("block_images", false));
+        settings.setBlockNetworkImage(!images);
+        if (Prefs.get().getBoolean("site_ua_" + host, false)) {
+            settings.setUserAgentString(DESKTOP_UA);
+        } else {
+            int uaMode = Prefs.uaMode();
+            if (uaMode == 1) {
+                settings.setUserAgentString(DESKTOP_UA);
+            } else if (uaMode == 2 && !Prefs.customUa().isEmpty()) {
+                settings.setUserAgentString(Prefs.customUa());
+            } else {
+                settings.setUserAgentString(null);
+            }
+        }
     }
 
     private void uaDialog() {
@@ -2020,11 +2123,13 @@ public class BrowserActivity extends AppCompatActivity {
     }
 
     private void customizeMenu() {
-        final List<List<MenuAction>> pages = buildMenuPages();
+        final List<List<MenuAction>> pages = buildMenuPages(false);
         final List<String> labels = new ArrayList<>();
         for (List<MenuAction> page : pages) {
             for (MenuAction action : page) {
-                labels.add(action.label);
+                if (!"定制菜单".equals(action.label)) {
+                    labels.add(action.label);
+                }
             }
         }
         java.util.Set<String> hidden =
@@ -2695,6 +2800,10 @@ public class BrowserActivity extends AppCompatActivity {
 
     @Override
     public void onBackPressed() {
+        if (fullscreen) {
+            toggleFullscreen();
+            return;
+        }
         if (editingAddress) {
             hideKeyboard();
             endEdit();
@@ -2886,6 +2995,7 @@ public class BrowserActivity extends AppCompatActivity {
             if (tab == null) {
                 return;
             }
+            applySiteSettings(view, url);
             if (!"about:blank".equals(url)) {
                 tab.url = url;
             }
@@ -2994,6 +3104,9 @@ public class BrowserActivity extends AppCompatActivity {
             if ("http".equals(scheme) || "https".equals(scheme) || "about".equals(scheme)
                     || "blob".equals(scheme) || "data".equals(scheme) || "file".equals(scheme)
                     || "javascript".equals(scheme)) {
+                if ("http".equals(scheme) || "https".equals(scheme)) {
+                    applySiteSettings(view, url);
+                }
                 return false;
             }
             try {
@@ -3025,7 +3138,7 @@ public class BrowserActivity extends AppCompatActivity {
         if (UrlUtils.isMedia(url)) {
             MediaSniffer.add(url);
         }
-        if (!mainFrame && AdBlock.shouldBlock(url)) {
+        if (!mainFrame && siteAdAllowed(url) && AdBlock.shouldBlock(url)) {
             return new WebResourceResponse("text/plain", "utf-8", new ByteArrayInputStream(new byte[0]));
         }
         return null;

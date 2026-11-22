@@ -151,9 +151,8 @@ public class VaultActivity extends AppCompatActivity {
                         entries.add(entry);
                     }
                     persist();
-                    if (!fillMode) {
-                        showList();
-                    }
+                    showList();
+                    Toast.makeText(VaultActivity.this, "已保存", Toast.LENGTH_SHORT).show();
                 })
                 .setNegativeButton("取消", null)
                 .show();
