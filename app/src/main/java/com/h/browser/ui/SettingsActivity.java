@@ -1135,10 +1135,7 @@ public class SettingsActivity extends AppCompatActivity {
         }
         File bgFile = new File(getFilesDir(), "home_bg.jpg");
         MaterialAlertDialogBuilder builder = new MaterialAlertDialogBuilder(this)
-                .setTitle("主页背景")
-                .setMessage(bgFile.exists()
-                        ? "图片背景使用中；选择纯色或清除图片可恢复纯色背景。"
-                        : "选择纯色背景，或从相册选择一张图片（自动压缩）。")
+                .setTitle(bgFile.exists() ? "主页背景 · 图片使用中" : "主页背景")
                 .setSingleChoiceItems(labels, checked, (dialog, which) -> {
                     dialog.dismiss();
                     Prefs.get().edit().putInt("home_bg", colors[which]).apply();
