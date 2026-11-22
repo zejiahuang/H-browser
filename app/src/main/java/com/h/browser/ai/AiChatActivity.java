@@ -16,6 +16,9 @@ import com.h.browser.data.Prefs;
 import com.h.browser.ui.SettingsActivity;
 import com.h.browser.ui.Ui;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
+
 public class AiChatActivity extends AppCompatActivity {
 
     private TextView transcript;
@@ -23,6 +26,8 @@ public class AiChatActivity extends AppCompatActivity {
     private AppCompatImageButton send;
     private ScrollView scroll;
     private final StringBuilder history = new StringBuilder();
+    private final JSONArray messages = new JSONArray();
+    private AiClient.Handle handle;
     private boolean streaming;
     private boolean contextAdded;
     private String pageText = "";
@@ -53,7 +58,13 @@ public class AiChatActivity extends AppCompatActivity {
         send.setContentDescription("发送");
         send.setBackground(Ui.ripple(this));
         send.setPadding(Ui.dp(this, 12), Ui.dp(this, 12), Ui.dp(this, 12), Ui.dp(this, 12));
-        send.setOnClickListener(v -> submit());
+        send.setOnClickListener(v -> {
+            if (streaming) {
+                stop();
+            } else {
+                submit();
+            }
+        });
         bar.addView(send, new LinearLayout.LayoutParams(Ui.dp(this, 48), Ui.dp(this, 48)));
         root.addView(bar);
 
@@ -78,6 +89,24 @@ public class AiChatActivity extends AppCompatActivity {
         scroll.post(() -> scroll.fullScroll(ScrollView.FOCUS_DOWN));
     }
 
+    private void stop() {
+        if (handle != null) {
+            handle.cancel();
+            handle = null;
+        }
+        streaming = false;
+        setSendMode(false);
+        history.append("\n（已停止）");
+        transcript.setText(history.toString());
+    }
+
+    private void setSendMode(boolean streaming) {
+        this.streaming = streaming;
+        send.setImageResource(streaming ? R.drawable.ic_close : R.drawable.ic_forward);
+        send.setContentDescription(streaming ? "停止" : "发送");
+        send.setEnabled(true);
+    }
+
     private void submit() {
         if (streaming) {
             return;
@@ -99,23 +128,24 @@ public class AiChatActivity extends AppCompatActivity {
             return;
         }
         input.setText("");
-        append("你", question);
-        final String prompt;
+        String content = question;
         if (!contextAdded && !pageText.isEmpty()) {
             String clipped = pageText.length() > 6000 ? pageText.substring(0, 6000) : pageText;
-            prompt = "网页地址：" + pageUrl + "\n网页内容：\n" + clipped
+            content = "网页地址：" + pageUrl + "\n网页内容：\n" + clipped
                     + "\n\n用户问题：" + question;
             contextAdded = true;
-        } else {
-            prompt = question;
         }
-        streaming = true;
-        send.setEnabled(false);
+        try {
+            messages.put(new JSONObject().put("role", "user").put("content", content));
+        } catch (Throwable ignored) {
+        }
+        append("你", question);
         append("AI", "");
-        final int start = history.lastIndexOf("AI：") + 3;
-        AiClient.stream(Prefs.aiBase(), Prefs.aiKey(), Prefs.aiModel(),
+        final int start = history.length();
+        setSendMode(true);
+        handle = AiClient.stream(Prefs.aiBase(), Prefs.aiKey(), Prefs.aiModel(),
                 "你是氢浏览器内置助手。回答简洁、准确，优先使用中文。",
-                prompt, new AiClient.Listener() {
+                messages, new AiClient.Listener() {
                     @Override
                     public void onDelta(final String text) {
                         runOnUiThread(() -> {
@@ -128,16 +158,21 @@ public class AiChatActivity extends AppCompatActivity {
                     @Override
                     public void onDone() {
                         runOnUiThread(() -> {
-                            streaming = false;
-                            send.setEnabled(true);
+                            handle = null;
+                            setSendMode(false);
+                            try {
+                                messages.put(new JSONObject().put("role", "assistant")
+                                        .put("content", history.substring(start)));
+                            } catch (Throwable ignored) {
+                            }
                         });
                     }
 
                     @Override
                     public void onError(final String message) {
                         runOnUiThread(() -> {
-                            streaming = false;
-                            send.setEnabled(true);
+                            handle = null;
+                            setSendMode(false);
                             if (history.length() > start) {
                                 history.append("\n（出错：" + message + "）");
                             } else {

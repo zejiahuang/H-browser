@@ -21,14 +21,36 @@ public final class AiClient {
         void onError(String message);
     }
 
+    public static final class Handle {
+        private volatile boolean cancelled;
+        private volatile HttpURLConnection connection;
+
+        public void cancel() {
+            cancelled = true;
+            HttpURLConnection c = connection;
+            if (c != null) {
+                try {
+                    c.disconnect();
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+
+        public boolean isCancelled() {
+            return cancelled;
+        }
+    }
+
     private AiClient() {
     }
 
-    public static void stream(final String base, final String key, final String model,
-                              final String system, final String prompt, final Listener listener) {
+    public static Handle stream(final String base, final String key, final String model,
+                                final String system, final JSONArray messages,
+                                final Listener listener) {
+        final Handle handle = new Handle();
         if (base == null || base.trim().isEmpty()) {
             listener.onError("请先在设置中配置 AI 接口");
-            return;
+            return handle;
         }
         new Thread(() -> {
             HttpURLConnection connection = null;
@@ -43,14 +65,17 @@ public final class AiClient {
                 JSONObject payload = new JSONObject();
                 payload.put("model", model == null || model.isEmpty() ? "gpt-4o-mini" : model);
                 payload.put("stream", true);
-                JSONArray messages = new JSONArray();
+                JSONArray all = new JSONArray();
                 if (system != null && !system.isEmpty()) {
-                    messages.put(new JSONObject().put("role", "system").put("content", system));
+                    all.put(new JSONObject().put("role", "system").put("content", system));
                 }
-                messages.put(new JSONObject().put("role", "user").put("content", prompt));
-                payload.put("messages", messages);
+                for (int i = 0; i < messages.length(); i++) {
+                    all.put(messages.get(i));
+                }
+                payload.put("messages", all);
 
                 connection = (HttpURLConnection) new URL(endpoint).openConnection();
+                handle.connection = connection;
                 connection.setConnectTimeout(20000);
                 connection.setReadTimeout(90000);
                 connection.setRequestMethod("POST");
@@ -63,6 +88,9 @@ public final class AiClient {
                 OutputStream out = connection.getOutputStream();
                 out.write(payload.toString().getBytes(StandardCharsets.UTF_8));
                 out.close();
+                if (handle.cancelled) {
+                    return;
+                }
 
                 int code = connection.getResponseCode();
                 if (code >= 400) {
@@ -74,7 +102,7 @@ public final class AiClient {
                         new InputStreamReader(in, StandardCharsets.UTF_8));
                 String line;
                 boolean received = false;
-                while ((line = reader.readLine()) != null) {
+                while (!handle.cancelled && (line = reader.readLine()) != null) {
                     line = line.trim();
                     if (!line.startsWith("data:")) {
                         continue;
@@ -102,19 +130,25 @@ public final class AiClient {
                     }
                 }
                 reader.close();
+                if (handle.cancelled) {
+                    return;
+                }
                 if (received) {
                     listener.onDone();
                 } else {
                     listener.onError("接口没有返回内容");
                 }
             } catch (Throwable t) {
-                listener.onError("请求失败：" + t.getMessage());
+                if (!handle.cancelled) {
+                    listener.onError("请求失败：" + t.getMessage());
+                }
             } finally {
                 if (connection != null) {
                     connection.disconnect();
                 }
             }
         }, "ai-stream").start();
+        return handle;
     }
 
     private static String readAll(InputStream in) {

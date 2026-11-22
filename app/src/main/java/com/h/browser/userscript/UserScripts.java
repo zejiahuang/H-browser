@@ -4,6 +4,8 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import android.webkit.WebView;
 
+import com.h.browser.data.Prefs;
+
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
@@ -161,9 +163,25 @@ public final class UserScripts {
         }
     }
 
+    public static boolean isEnabled(String id) {
+        return !Prefs.get().getStringSet("userscript_disabled",
+                Collections.emptySet()).contains(id);
+    }
+
+    public static void setEnabled(String id, boolean enabled) {
+        java.util.Set<String> set = new java.util.HashSet<>(
+                Prefs.get().getStringSet("userscript_disabled", Collections.emptySet()));
+        if (enabled) {
+            set.remove(id);
+        } else {
+            set.add(id);
+        }
+        Prefs.get().edit().putStringSet("userscript_disabled", set).apply();
+    }
+
     public static void inject(WebView webView, String url) {
         for (Script script : list()) {
-            if (!matches(script, url)) {
+            if (!matches(script, url) || !isEnabled(script.id)) {
                 continue;
             }
             String bootstrap = "(function(){var sid=" + JSONObject.quote(script.id) + ";"

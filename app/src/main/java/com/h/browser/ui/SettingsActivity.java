@@ -715,10 +715,8 @@ public class SettingsActivity extends AppCompatActivity {
         String trans = Prefs.transUrl().isEmpty()
                 ? "未设置（LibreTranslate / OpenAI 兼容）" : Prefs.transUrl();
         flat("翻译接口", trans, null, this::transDialog);
-        switchFlat("流量节省", "请求网站节省流量",
-                pref("data_saver"), value -> setPref("data_saver", value));
-        switchFlat("自动展示嗅探按钮", null,
-                pref("auto_sniff"), value -> setPref("auto_sniff", value));
+        switchFlat("自动展示嗅探按钮", "页面出现可播放媒体时提示",
+                pref("auto_sniff", true), value -> setPref("auto_sniff", value));
         if (com.h.browser.BuildConfig.DEBUG) {
             switchFlat("允许调试网页", null,
                     pref("debug_web"), value -> {
@@ -726,10 +724,6 @@ public class SettingsActivity extends AppCompatActivity {
                         WebView.setWebContentsDebuggingEnabled(value);
                     });
         }
-        switchFlat("禁用预测返回手势", null,
-                pref("no_predictive"), value -> setPref("no_predictive", value));
-        switchFlat("禁用 Custom Tabs", "跳过第三方应用通过 Custom Tabs 打开链接时的中转页",
-                pref("no_custom_tabs"), value -> setPref("no_custom_tabs", value));
     }
 
     private void buildScripts() {
@@ -743,7 +737,12 @@ public class SettingsActivity extends AppCompatActivity {
             return;
         }
         for (UserScripts.Script script : scripts) {
-            flat(script.name, "用户脚本", null, () ->
+            switchFlat(script.name, "用户脚本 · " + (UserScripts.isEnabled(script.id) ? "已启用" : "已停用"),
+                    UserScripts.isEnabled(script.id), value -> {
+                        UserScripts.setEnabled(script.id, value);
+                        buildCategory("scripts");
+                    });
+            flat("删除「" + script.name + "」", null, null, () ->
                     new MaterialAlertDialogBuilder(this)
                             .setTitle(script.name)
                             .setMessage("要删除这个脚本吗？")

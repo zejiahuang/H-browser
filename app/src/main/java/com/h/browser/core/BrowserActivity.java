@@ -41,8 +41,10 @@ import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
+import android.webkit.WebStorage;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.webkit.WebViewDatabase;
 import android.widget.ArrayAdapter;
 import android.widget.AutoCompleteTextView;
 import android.widget.EditText;
@@ -109,6 +111,7 @@ import com.h.browser.userscript.GmBridge;
 import com.h.browser.userscript.UserScripts;
 import com.h.browser.vault.VaultActivity;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 import org.json.JSONTokener;
 
@@ -209,6 +212,7 @@ public class BrowserActivity extends AppCompatActivity {
         String url = "v://home";
         String title = "新标签";
         String urlBeforeLoad;
+        boolean needLoad;
 
         Tab(int id, boolean incognito) {
             this.id = id;
@@ -236,7 +240,7 @@ public class BrowserActivity extends AppCompatActivity {
                 if (isFinishing() || current >= 0) {
                     return;
                 }
-                if (!handleIntent(getIntent())) {
+                if (!handleIntent(getIntent()) && !restoreSession()) {
                     newTab(Prefs.homepage(), Prefs.incognitoDefault());
                 }
             });
@@ -1421,6 +1425,10 @@ public class BrowserActivity extends AppCompatActivity {
         }
         current = index;
         Tab tab = tabs.get(index);
+        if (tab.needLoad) {
+            tab.needLoad = false;
+            loadUrl(tab, tab.url);
+        }
         if (tab.web.getParent() instanceof ViewGroup) {
             ((ViewGroup) tab.web.getParent()).removeView(tab.web);
         }
@@ -3955,10 +3963,81 @@ public class BrowserActivity extends AppCompatActivity {
     @Override
     protected void onPause() {
         super.onPause();
+        saveSession();
         WebView web = currentWeb();
         if (web != null) {
             web.onPause();
         }
+    }
+
+    private void saveSession() {
+        try {
+            JSONArray arr = new JSONArray();
+            int cur = -1;
+            for (int i = 0; i < tabs.size(); i++) {
+                Tab tab = tabs.get(i);
+                if (tab.incognito) {
+                    continue;
+                }
+                String u = tab.url;
+                if (u == null || u.isEmpty() || u.startsWith("about:")) {
+                    continue;
+                }
+                JSONObject o = new JSONObject();
+                o.put("url", u);
+                o.put("title", tab.title == null ? "" : tab.title);
+                if (i == current) {
+                    cur = arr.length();
+                }
+                arr.put(o);
+            }
+            Prefs.get().edit()
+                    .putString("tabs_json", arr.toString())
+                    .putInt("tabs_current", Math.max(0, cur))
+                    .apply();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private boolean restoreSession() {
+        String json = Prefs.get().getString("tabs_json", "");
+        if (json.isEmpty()) {
+            return false;
+        }
+        List<String> urls = new ArrayList<>();
+        List<String> titles = new ArrayList<>();
+        try {
+            JSONArray arr = new JSONArray(json);
+            for (int i = 0; i < arr.length(); i++) {
+                JSONObject o = arr.optJSONObject(i);
+                if (o == null) {
+                    continue;
+                }
+                String u = o.optString("url", "");
+                if (u.isEmpty()) {
+                    continue;
+                }
+                urls.add(u);
+                titles.add(o.optString("title", ""));
+            }
+        } catch (Throwable t) {
+            return false;
+        }
+        if (urls.isEmpty()) {
+            return false;
+        }
+        for (int i = 0; i < urls.size(); i++) {
+            Tab tab = newEmptyTab(false);
+            tab.url = urls.get(i);
+            tab.title = titles.get(i).isEmpty() ? tab.url : titles.get(i);
+            tab.needLoad = true;
+        }
+        int index = Math.max(0, Math.min(Prefs.get().getInt("tabs_current", 0), tabs.size() - 1));
+        Tab target = tabs.get(index);
+        target.needLoad = false;
+        selectTab(index);
+        loadUrl(target, target.url);
+        return true;
     }
 
     @Override
@@ -4005,6 +4084,8 @@ public class BrowserActivity extends AppCompatActivity {
 
     @Override
     protected void onDestroy() {
+        boolean clearOnExit = !isChangingConfigurations()
+                && Prefs.get().getBoolean("clear_on_exit", false);
         if (bottomBarGlass != null) {
             bottomBarGlass.release();
             bottomBarGlass = null;
@@ -4016,6 +4097,13 @@ public class BrowserActivity extends AppCompatActivity {
         }
         tabs.clear();
         super.onDestroy();
+        if (clearOnExit) {
+            CookieManager cm = CookieManager.getInstance();
+            cm.removeAllCookies(null);
+            cm.flush();
+            WebStorage.getInstance().deleteAllData();
+            WebViewDatabase.getInstance(this).clearHttpAuthUsernamePassword();
+        }
     }
 
     @Override
@@ -4347,7 +4435,7 @@ public class BrowserActivity extends AppCompatActivity {
         if (url == null || url.startsWith("v://")) {
             return null;
         }
-        if (UrlUtils.isMedia(url)) {
+        if (UrlUtils.isMedia(url) && Prefs.get().getBoolean("auto_sniff", true)) {
             MediaSniffer.add(url);
         }
         Tab tab = tabFor(view);
