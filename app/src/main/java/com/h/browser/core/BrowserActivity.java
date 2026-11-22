@@ -151,6 +151,8 @@ public class BrowserActivity extends AppCompatActivity {
     private LinearLayout root;
     private LinearLayout column;
     private FrameLayout webContainer;
+    private FrameLayout errorOverlay;
+    private TextView errorUrlView;
     private FrameLayout pageHost;
     private FrameLayout homeOverlay;
     private ImageView homeBgImage;
@@ -220,6 +222,8 @@ public class BrowserActivity extends AppCompatActivity {
         String url = "v://home";
         String title = "新标签";
         String urlBeforeLoad;
+        String errorUrl;
+        boolean errorPage;
         boolean needLoad;
 
         Tab(int id, boolean incognito) {
@@ -762,9 +766,32 @@ public class BrowserActivity extends AppCompatActivity {
         }
     }
 
+    private static String internalFromTitle(String title) {
+        if (title == null) {
+            return null;
+        }
+        switch (title) {
+            case "主页":
+                return "v://home";
+            case "书签":
+                return "v://bookmarks";
+            case "历史":
+                return "v://history";
+            case "拦截日志":
+                return "v://log";
+            case "隐私报告":
+                return "v://privacy";
+            case "关于":
+                return "v://about";
+            default:
+                return null;
+        }
+    }
+
     private void assignPageUrl(Tab tab, String url) {
         if (tab == null || url == null || "about:blank".equals(url)
-                || url.startsWith("data:") || url.startsWith("blob:")) {
+                || url.startsWith("data:") || url.startsWith("blob:")
+                || url.startsWith("v://error")) {
             return;
         }
         tab.url = url;
@@ -1002,6 +1029,67 @@ public class BrowserActivity extends AppCompatActivity {
         homeOverlay.setVisibility(View.VISIBLE);
         webContainer.addView(homeOverlay, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        buildErrorOverlay();
+    }
+
+    private void buildErrorOverlay() {
+        errorOverlay = new FrameLayout(this);
+        errorOverlay.setBackgroundColor(color(R.color.surface));
+        errorOverlay.setClickable(true);
+        errorOverlay.setVisibility(View.GONE);
+
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setGravity(Gravity.CENTER_HORIZONTAL);
+
+        TextView title = new TextView(this);
+        title.setText("无法打开这个页面");
+        title.setTextSize(24);
+        title.setTypeface(title.getTypeface(), android.graphics.Typeface.BOLD);
+        title.setTextColor(Glass.night(this) ? 0xFFDEE4E4 : 0xFF171D1E);
+        box.addView(title, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        errorUrlView = new TextView(this);
+        errorUrlView.setTextSize(14);
+        errorUrlView.setGravity(Gravity.CENTER);
+        errorUrlView.setMaxLines(3);
+        errorUrlView.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
+        errorUrlView.setTextColor(Glass.night(this) ? 0xFFBEC8C9 : 0xFF3F4849);
+        LinearLayout.LayoutParams urlParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        urlParams.setMargins(dp(24), dp(10), dp(24), dp(20));
+        box.addView(errorUrlView, urlParams);
+
+        TextView retry = new TextView(this);
+        retry.setText("重试");
+        retry.setTextSize(15);
+        retry.setTypeface(retry.getTypeface(), android.graphics.Typeface.BOLD);
+        retry.setTextColor(0xFF00363B);
+        retry.setGravity(Gravity.CENTER);
+        android.graphics.drawable.GradientDrawable retryBg =
+                new android.graphics.drawable.GradientDrawable();
+        retryBg.setColor(color(R.color.primary));
+        retryBg.setCornerRadius(dp(20));
+        retry.setBackground(retryBg);
+        retry.setPadding(dp(26), dp(12), dp(26), dp(12));
+        retry.setOnClickListener(v -> retryError());
+        box.addView(retry, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        errorOverlay.addView(box, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER));
+        webContainer.addView(errorOverlay, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+    }
+
+    private void retryError() {
+        Tab tab = currentTab();
+        if (tab == null || tab.errorUrl == null || tab.errorUrl.isEmpty()) {
+            return;
+        }
+        loadUrl(tab, tab.errorUrl);
     }
 
     private void updateHomeOverlay() {
@@ -1353,6 +1441,9 @@ public class BrowserActivity extends AppCompatActivity {
         if (UrlUtils.isInternal(tab.url)) {
             return true;
         }
+        if (tab.errorPage && tab.errorUrl != null) {
+            return true;
+        }
         return tab.web != null && UrlUtils.isInternal(tab.web.getUrl());
     }
 
@@ -1631,6 +1722,11 @@ public class BrowserActivity extends AppCompatActivity {
             case "media":
                 startActivity(new Intent(this, MediaListActivity.class));
                 return;
+            case "error":
+                if (tab.errorUrl != null) {
+                    loadUrl(tab, tab.errorUrl);
+                }
+                return;
             default:
                 break;
         }
@@ -1694,6 +1790,10 @@ public class BrowserActivity extends AppCompatActivity {
     public void reloadInternal() {
         Tab tab = currentTab();
         if (tab == null) {
+            return;
+        }
+        if (tab.errorPage && tab.errorUrl != null) {
+            loadUrl(tab, tab.errorUrl);
             return;
         }
         if (UrlUtils.isInternal(tab.url) && !isDataPage(tab.url)) {
@@ -1763,7 +1863,9 @@ public class BrowserActivity extends AppCompatActivity {
             return;
         }
         Tab tab = currentTab();
-        if (tab != null && UrlUtils.isInternal(tab.url) && !isDataPage(tab.url)) {
+        if (tab != null && tab.errorPage && tab.errorUrl != null) {
+            loadUrl(tab, tab.errorUrl);
+        } else if (tab != null && UrlUtils.isInternal(tab.url) && !isDataPage(tab.url)) {
             handleInternal(tab, tab.url);
         } else {
             web.reload();
@@ -1774,6 +1876,12 @@ public class BrowserActivity extends AppCompatActivity {
         Tab tab = currentTab();
         if (tab == null) {
             return;
+        }
+        if (errorOverlay != null) {
+            if (errorUrlView != null) {
+                errorUrlView.setText(tab.errorUrl == null ? "" : tab.errorUrl);
+            }
+            errorOverlay.setVisibility(tab.errorPage ? View.VISIBLE : View.GONE);
         }
         boolean home = UrlUtils.isInternal(tab.url) && !isDataPage(tab.url);
         updateBarMode();
@@ -1902,17 +2010,14 @@ public class BrowserActivity extends AppCompatActivity {
         if (tab == null || tab.web == null) {
             return;
         }
-        String safe = UrlUtils.escapeHtml(failingUrl);
-        String html = "<!doctype html><html><head><meta charset=utf-8>"
-                + "<meta name=viewport content='width=device-width,initial-scale=1'>"
-                + "<style>body{font-family:system-ui;background:#0E1415;color:#DEE4E4;margin:0;display:flex;"
-                + "align-items:center;justify-content:center;height:100vh;text-align:center;padding:24px}"
-                + "h1{font-size:26px;margin:0 0 8px}p{color:#BEC8C9;font-size:14px;word-break:break-all}"
-                + "button{margin-top:18px;border:0;border-radius:20px;padding:12px 22px;background:#4FD8E4;"
-                + "color:#00363B;font-size:15px;font-weight:700}</style></head><body><div>"
-                + "<h1>无法打开这个页面</h1><p>" + safe + "</p>"
-                + "<button onclick='HNative.reloadPage()'>重试</button></div></body></html>";
-        tab.web.loadDataWithBaseURL("v://error", html, "text/html", "utf-8", null);
+        tab.errorUrl = failingUrl;
+        tab.errorPage = true;
+        if (errorOverlay != null) {
+            if (errorUrlView != null) {
+                errorUrlView.setText(failingUrl);
+            }
+            errorOverlay.setVisibility(View.VISIBLE);
+        }
     }
 
     private static final class MenuGestureLayout extends FrameLayout {
@@ -4069,6 +4174,10 @@ public class BrowserActivity extends AppCompatActivity {
                 if (u == null || u.isEmpty() || u.startsWith("about:")) {
                     continue;
                 }
+                if (u.startsWith("v://error")) {
+                    u = tab.errorUrl != null && !tab.errorUrl.isEmpty()
+                            ? tab.errorUrl : "v://home";
+                }
                 JSONObject o = new JSONObject();
                 o.put("url", u);
                 o.put("title", tab.title == null ? "" : tab.title);
@@ -4102,6 +4211,9 @@ public class BrowserActivity extends AppCompatActivity {
                 String u = o.optString("url", "");
                 if (u.isEmpty()) {
                     continue;
+                }
+                if (u.startsWith("v://error")) {
+                    u = "v://home";
                 }
                 urls.add(u);
                 titles.add(o.optString("title", ""));
@@ -4346,10 +4458,17 @@ public class BrowserActivity extends AppCompatActivity {
             }
             applySiteSettings(view, url);
             assignPageUrl(tab, url);
+            if (url != null && !url.startsWith("v://error")
+                    && !url.startsWith("data:") && !url.startsWith("about:")) {
+                tab.errorPage = false;
+            }
             injectCosmetic(view, url);
             if (tab == currentTab()) {
                 progress.setProgress(0);
                 progress.setVisibility(View.VISIBLE);
+                if (errorOverlay != null && !tab.errorPage) {
+                    errorOverlay.setVisibility(View.GONE);
+                }
                 updateAddress();
                 lastScrollY = 0;
                 if (barHidden) {
@@ -4384,6 +4503,12 @@ public class BrowserActivity extends AppCompatActivity {
             String title = view.getTitle();
             if (title != null && !"about:blank".equals(title)) {
                 tab.title = title;
+            }
+            if (!tab.errorPage && (url == null || url.startsWith("about:") || url.startsWith("data:"))) {
+                String mapped = internalFromTitle(title);
+                if (mapped != null) {
+                    tab.url = mapped;
+                }
             }
             if (!UrlUtils.isInternal(tab.url) && !tab.incognito) {
                 Db.get(BrowserActivity.this).addHistory(title, url);

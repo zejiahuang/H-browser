@@ -59,8 +59,9 @@ public final class InternalPages {
             case "about":
                 return wrap("关于", about());
             case "home":
-            default:
                 return home(context);
+            default:
+                return wrap("页面不存在", "<div class=card>找不到这个内部页面。</div>");
         }
     }
 
