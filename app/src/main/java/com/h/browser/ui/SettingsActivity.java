@@ -717,6 +717,24 @@ public class SettingsActivity extends AppCompatActivity {
         flat("翻译接口", trans, null, this::transDialog);
         switchFlat("自动展示嗅探按钮", "页面出现可播放媒体时提示",
                 pref("auto_sniff", true), value -> setPref("auto_sniff", value));
+        flat("朗读语速", Prefs.ttsSpeed() + "×", null, () -> {
+            final String[] labels = {"0.75×", "1×", "1.25×", "1.5×", "2×"};
+            final float[] values = {0.75f, 1f, 1.25f, 1.5f, 2f};
+            int checked = 1;
+            for (int i = 0; i < values.length; i++) {
+                if (Math.abs(values[i] - Prefs.ttsSpeed()) < 0.01f) {
+                    checked = i;
+                }
+            }
+            new MaterialAlertDialogBuilder(this)
+                    .setTitle("朗读语速")
+                    .setSingleChoiceItems(labels, checked, (d, which) -> {
+                        Prefs.setTtsSpeed(values[which]);
+                        d.dismiss();
+                        buildCategory("advanced");
+                    })
+                    .show();
+        });
         if (com.h.browser.BuildConfig.DEBUG) {
             switchFlat("允许调试网页", null,
                     pref("debug_web"), value -> {
