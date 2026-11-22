@@ -27,6 +27,7 @@ import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.app.AppCompatDelegate;
 import androidx.appcompat.widget.SwitchCompat;
@@ -1316,6 +1317,45 @@ public class SettingsActivity extends AppCompatActivity {
                 .show();
     }
 
+    private void listSheet(String title, String summary, String[] items,
+            android.content.DialogInterface.OnClickListener pick,
+            String positive, Runnable onPositive,
+            String neutral, Runnable onNeutral) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        int pad = Ui.dp(this, 20);
+        if (summary != null && !summary.isEmpty()) {
+            TextView head = Ui.text(this, summary, 13, R.color.on_surface_variant);
+            head.setPadding(pad, 0, pad, Ui.dp(this, 6));
+            box.addView(head);
+        }
+        final AlertDialog[] ref = new AlertDialog[1];
+        ScrollView scroll = new ScrollView(this);
+        scroll.setLayoutParams(new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                Math.min(Ui.dp(this, 380), Ui.dp(this, 58 * items.length + 12))));
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        for (int i = 0; i < items.length; i++) {
+            final int idx = i;
+            list.addView(Ui.item(this, items[i], null, () -> {
+                if (ref[0] != null) ref[0].dismiss();
+                pick.onClick(ref[0], idx);
+            }));
+        }
+        scroll.addView(list);
+        box.addView(scroll);
+        MaterialAlertDialogBuilder b = new MaterialAlertDialogBuilder(this)
+                .setTitle(title).setView(box).setNegativeButton("关闭", null);
+        if (positive != null) {
+            b.setPositiveButton(positive, (d, w) -> onPositive.run());
+        }
+        if (neutral != null) {
+            b.setNeutralButton(neutral, (d, w) -> onNeutral.run());
+        }
+        ref[0] = b.show();
+    }
+
     private void adblockDialog() {
         boolean enabled = Prefs.adblockEnabled();
         String[] items = {
@@ -1326,43 +1366,40 @@ public class SettingsActivity extends AppCompatActivity {
                 "站点例外",
                 "查看拦截日志"
         };
-        new MaterialAlertDialogBuilder(this).setTitle("广告拦截")
-                .setMessage((enabled ? "已启用" : "已关闭") + " · 规则 "
-                        + AdBlock.ruleCount() + " 条 · 已拦截 "
-                        + AdBlock.blockedCount() + " 次\n"
-                        + AdBlock.statsSummary())
-                .setItems(items, (d, which) -> {
-                    switch (which) {
-                        case 0:
-                            Prefs.setAdblockEnabled(!enabled);
-                            AdBlock.init(this);
-                            buildCategory("general");
-                            break;
-                        case 1:
-                            toast("开始更新全部订阅…");
-                            AdBlock.updateAll(this, (ok, message) -> runOnUiThread(() -> {
-                                toast(message);
-                                buildCategory("general");
-                            }));
-                            break;
-                        case 2:
-                            subscriptionsDialog();
-                            break;
-                        case 3:
-                            userRulesDialog();
-                            break;
-                        case 4:
-                            siteExceptionsDialog();
-                            break;
-                        default:
-                            startActivity(new Intent(this, BrowserActivity.class)
-                                    .setAction(Intent.ACTION_VIEW)
-                                    .setData(Uri.parse("v://log")));
-                            break;
-                    }
-                })
-                .setNegativeButton("关闭", null)
-                .show();
+        String summary = (enabled ? "已启用" : "已关闭") + " · 规则 "
+                + AdBlock.ruleCount() + " 条 · 已拦截 "
+                + AdBlock.blockedCount() + " 次\n"
+                + AdBlock.statsSummary();
+        listSheet("广告拦截", summary, items, (d, which) -> {
+            switch (which) {
+                case 0:
+                    Prefs.setAdblockEnabled(!enabled);
+                    AdBlock.init(this);
+                    buildCategory("general");
+                    break;
+                case 1:
+                    toast("开始更新全部订阅…");
+                    AdBlock.updateAll(this, (ok, message) -> runOnUiThread(() -> {
+                        toast(message);
+                        buildCategory("general");
+                    }));
+                    break;
+                case 2:
+                    subscriptionsDialog();
+                    break;
+                case 3:
+                    userRulesDialog();
+                    break;
+                case 4:
+                    siteExceptionsDialog();
+                    break;
+                default:
+                    startActivity(new Intent(this, BrowserActivity.class)
+                            .setAction(Intent.ACTION_VIEW)
+                            .setData(Uri.parse("v://log")));
+                    break;
+            }
+        }, null, null, null, null);
     }
 
     private void subscriptionsDialog() {
@@ -1373,17 +1410,14 @@ public class SettingsActivity extends AppCompatActivity {
             labels[i] = (sub.enabled ? "✓ " : "· ") + sub.name
                     + (sub.rules > 0 ? "  " + sub.rules + " 条" : "");
         }
-        new MaterialAlertDialogBuilder(this).setTitle("订阅规则")
-                .setMessage("内置基础规则始终启用。点击订阅可启停、更新或删除。")
-                .setItems(labels, (d, which) -> subscriptionOptions(subs.get(which)))
-                .setPositiveButton("添加订阅", (d, w) -> addSubscriptionDialog())
-                .setNeutralButton("全部更新", (d, w) -> {
+        listSheet("订阅规则", "内置基础规则始终启用。点击订阅可启停、更新或删除。",
+                labels, (d, which) -> subscriptionOptions(subs.get(which)),
+                "添加订阅", this::addSubscriptionDialog,
+                "全部更新", () -> {
                     toast("开始更新全部订阅…");
                     AdBlock.updateAll(this, (ok, message) ->
                             runOnUiThread(() -> toast(message)));
-                })
-                .setNegativeButton("关闭", null)
-                .show();
+                });
     }
 
     private void subscriptionOptions(Subscriptions.Sub sub) {
@@ -1393,10 +1427,9 @@ public class SettingsActivity extends AppCompatActivity {
         if (!sub.builtin) {
             actions.add("删除");
         }
-        new MaterialAlertDialogBuilder(this).setTitle(sub.name)
-                .setMessage(sub.url + (sub.error == null || sub.error.isEmpty()
-                        ? "" : "\n错误：" + sub.error))
-                .setItems(actions.toArray(new String[0]), (d, which) -> {
+        String summary = sub.url + (sub.error == null || sub.error.isEmpty()
+                ? "" : "\n错误：" + sub.error);
+        listSheet(sub.name, summary, actions.toArray(new String[0]), (d, which) -> {
                     if (which == 0) {
                         final boolean enable = !sub.enabled;
                         new Thread(() -> {
@@ -1429,9 +1462,7 @@ public class SettingsActivity extends AppCompatActivity {
                                 .setNegativeButton("取消", null)
                                 .show();
                     }
-                })
-                .setNegativeButton("关闭", null)
-                .show();
+                }, null, null, null, null);
     }
 
     private void addSubscriptionDialog() {
@@ -1481,9 +1512,8 @@ public class SettingsActivity extends AppCompatActivity {
             toast("还没有自定义规则，可在网页菜单中“标记广告”");
             return;
         }
-        new MaterialAlertDialogBuilder(this).setTitle("我的规则")
-                .setMessage("点击规则可删除。共 " + rules.size() + " 条。")
-                .setItems(rules.toArray(new String[0]), (d, which) -> {
+        listSheet("我的规则", "点击规则可删除。共 " + rules.size() + " 条。",
+                rules.toArray(new String[0]), (d, which) -> {
                     String line = rules.get(which);
                     new MaterialAlertDialogBuilder(this).setTitle("删除规则")
                             .setMessage(line)
@@ -1494,9 +1524,7 @@ public class SettingsActivity extends AppCompatActivity {
                             })
                             .setNegativeButton("取消", null)
                             .show();
-                })
-                .setNegativeButton("关闭", null)
-                .show();
+                }, null, null, null, null);
     }
 
     private void siteExceptionsDialog() {
@@ -1512,15 +1540,12 @@ public class SettingsActivity extends AppCompatActivity {
             toast("没有站点例外");
             return;
         }
-        new MaterialAlertDialogBuilder(this).setTitle("站点例外")
-                .setMessage("这些站点已关闭广告拦截，点击可恢复。")
-                .setItems(hosts.toArray(new String[0]), (d, which) -> {
+        listSheet("站点例外", "这些站点已关闭广告拦截，点击可恢复。",
+                hosts.toArray(new String[0]), (d, which) -> {
                     Prefs.get().edit().remove("site_ad_" + hosts.get(which)).apply();
                     toast("已恢复 " + hosts.get(which));
                     siteExceptionsDialog();
-                })
-                .setNegativeButton("关闭", null)
-                .show();
+                }, null, null, null, null);
     }
 
     private String orientationName() {
