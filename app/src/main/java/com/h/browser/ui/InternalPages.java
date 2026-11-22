@@ -2,6 +2,7 @@ package com.h.browser.ui;
 
 import android.content.Context;
 
+import com.h.browser.BuildConfig;
 import com.h.browser.adblock.AdBlock;
 import com.h.browser.core.UrlUtils;
 import com.h.browser.data.Db;
@@ -150,7 +151,7 @@ public final class InternalPages {
     }
 
     private static String about() {
-        return "<div class=card><h2>氢 (H browser) 0.2.0</h2>"
+        return "<div class=card><h2>氢 (H browser) " + BuildConfig.VERSION_NAME + "</h2>"
                 + "<div class=sub>一个基于系统 WebView 的轻量浏览器。无遥测，无账号，无私有云依赖。</div></div>"
                 + "<div class=card><h2>已实现</h2><div class=sub>多标签 · 广告拦截 · 用户脚本 · 阅读模式 · AI 助手 · 翻译 · 朗读 · "
                 + "媒体嗅探 · 下载 · PDF · 扫码 · 密码库 · WebDAV 同步 · 无痕浏览 · 玻璃模糊 · 悬浮工具栏 · "
