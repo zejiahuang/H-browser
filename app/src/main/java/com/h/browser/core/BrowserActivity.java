@@ -566,7 +566,7 @@ public class BrowserActivity extends AppCompatActivity {
 
     private void updateBarMode() {
         Tab tab = currentTab();
-        boolean home = tab != null && UrlUtils.isInternal(tab.url) && !isDataPage(tab.url);
+        boolean home = tab != null && "v://home".equals(tab.url);
         boolean split = home && !editingAddress && !fullscreen
                 && homeBar != null && Glass.floatingToolbar();
         if (homeBar != null) {
