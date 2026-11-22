@@ -144,6 +144,11 @@ public class BrowserActivity extends AppCompatActivity {
     private GlassDrawable bottomBarGlass;
     private GlassShadowView barShadow;
     private BottomBlurStripView bottomStrip;
+    private LinearLayout homeBar;
+    private ImageButton homeBackButton;
+    private ImageButton homeForwardButton;
+    private TextView homeTabCount;
+    private final List<GlassDrawable> homeBarGlass = new ArrayList<>();
     private int imeLift;
     private boolean fullscreen;
     private String toolbarPref;
@@ -446,6 +451,8 @@ public class BrowserActivity extends AppCompatActivity {
         });
         buildToolbar();
         applyToolbarStyle();
+        buildHomeBar(stage);
+        updateBarMode();
     }
 
     private FrameLayout.LayoutParams bottomBarLayoutParams() {
@@ -455,6 +462,141 @@ public class BrowserActivity extends AppCompatActivity {
         int margin = Glass.floatingToolbar() ? dp(Glass.toolbarMargin()) : 0;
         params.setMargins(margin, 0, margin, margin);
         return params;
+    }
+
+    /**
+     * 主页三段式悬浮栏（参考 mafari SafariSplit）：后退/前进、搜索、标签+菜单
+     * 各自一块玻璃，仅主页显示；网页与编辑地址时回到两行整卡。
+     */
+    private void buildHomeBar(ViewGroup stage) {
+        homeBar = new LinearLayout(this);
+        homeBar.setOrientation(LinearLayout.HORIZONTAL);
+        homeBar.setGravity(Gravity.CENTER_VERTICAL);
+        homeBar.setClipChildren(false);
+        homeBar.setClipToPadding(false);
+
+        LinearLayout left = buildHomeSegment();
+        homeBackButton = toolButton(R.drawable.ic_back, "后退", v -> goBack());
+        left.addView(homeBackButton, new LinearLayout.LayoutParams(dp(44), dp(44)));
+        homeForwardButton = toolButton(R.drawable.ic_forward, "前进", v -> goForward());
+        left.addView(homeForwardButton, new LinearLayout.LayoutParams(dp(44), dp(44)));
+
+        LinearLayout middle = buildHomeSegment();
+        middle.setClickable(true);
+        middle.setContentDescription("搜索或输入网址");
+        middle.setOnClickListener(v -> beginEdit());
+        androidx.appcompat.widget.AppCompatImageView searchIcon =
+                new androidx.appcompat.widget.AppCompatImageView(this);
+        searchIcon.setImageResource(R.drawable.ic_search);
+        searchIcon.setColorFilter(color(R.color.on_surface_variant));
+        searchIcon.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
+        searchIcon.setPadding(dp(11), dp(11), dp(5), dp(11));
+        middle.addView(searchIcon, new LinearLayout.LayoutParams(dp(40), dp(44)));
+        TextView hint = new TextView(this);
+        hint.setText("搜索");
+        hint.setTextSize(15);
+        hint.setTextColor(color(R.color.on_surface_variant));
+        hint.setSingleLine(true);
+        middle.addView(hint, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        ImageButton scan = toolButton(R.drawable.ic_scan, "扫描二维码", v -> startScan());
+        middle.addView(scan, new LinearLayout.LayoutParams(dp(40), dp(40)));
+
+        LinearLayout right = buildHomeSegment();
+        FrameLayout tabHolder = new FrameLayout(this);
+        tabHolder.addView(toolButton(R.drawable.ic_tabs_count, "标签页", v -> showTabs()),
+                new FrameLayout.LayoutParams(dp(44), dp(44), Gravity.CENTER));
+        homeTabCount = new TextView(this);
+        homeTabCount.setTextSize(11);
+        homeTabCount.setGravity(Gravity.CENTER);
+        homeTabCount.setTextColor(color(R.color.on_surface));
+        homeTabCount.setIncludeFontPadding(false);
+        homeTabCount.setSingleLine(true);
+        tabHolder.addView(homeTabCount, new FrameLayout.LayoutParams(
+                dp(24), dp(24), Gravity.CENTER));
+        right.addView(tabHolder, new LinearLayout.LayoutParams(dp(44), dp(44)));
+        right.addView(toolButton(R.drawable.ic_menu, "菜单", v -> showMenu()),
+                new LinearLayout.LayoutParams(dp(44), dp(44)));
+
+        homeBar.addView(left, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(52)));
+        LinearLayout.LayoutParams middleParams = new LinearLayout.LayoutParams(0, dp(52), 1f);
+        middleParams.setMargins(dp(8), 0, dp(8), 0);
+        homeBar.addView(middle, middleParams);
+        homeBar.addView(right, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(52)));
+        // 三段同时入镜会互相污染快照，捕获时互相当作隐藏项
+        for (GlassDrawable g : homeBarGlass) {
+            g.addCaptureHide(left);
+            g.addCaptureHide(middle);
+            g.addCaptureHide(right);
+        }
+        homeBar.setVisibility(View.GONE);
+        stage.addView(homeBar, bottomBarLayoutParams());
+        updateTabCount();
+    }
+
+    private LinearLayout buildHomeSegment() {
+        LinearLayout segment = new LinearLayout(this);
+        segment.setOrientation(LinearLayout.HORIZONTAL);
+        segment.setGravity(Gravity.CENTER_VERTICAL);
+        segment.setClipChildren(false);
+        segment.setClipToPadding(false);
+        final int radiusDp = 26;
+        if (Glass.enabled() && Build.VERSION.SDK_INT >= 26) {
+            GlassDrawable glass = new GlassDrawable(getWindow(), true, radiusDp, Glass.curve());
+            glass.setDrawShadow(false);
+            homeBarGlass.add(glass);
+            segment.setBackground(glass);
+        } else if (Glass.enabled()) {
+            segment.setBackground(Glass.panel(this, radiusDp));
+        } else {
+            GradientDrawable solid = new GradientDrawable();
+            solid.setColor(color(R.color.surface_container));
+            solid.setCornerRadius(dp(radiusDp));
+            segment.setBackground(solid);
+        }
+        if (Build.VERSION.SDK_INT >= 21) {
+            segment.setElevation(dp(6));
+        }
+        segment.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) ->
+                G2Path.applyOutline(v, dp(radiusDp), Glass.curve() / 100f));
+        return segment;
+    }
+
+    private void updateBarMode() {
+        Tab tab = currentTab();
+        boolean home = tab != null && UrlUtils.isInternal(tab.url) && !isDataPage(tab.url);
+        boolean split = home && !editingAddress && !fullscreen
+                && homeBar != null && Glass.floatingToolbar();
+        if (homeBar != null) {
+            homeBar.setVisibility(split ? View.VISIBLE : View.GONE);
+        }
+        if (bottomBar != null) {
+            bottomBar.setVisibility(split || fullscreen ? View.GONE : View.VISIBLE);
+        }
+        if (barShadow != null) {
+            barShadow.setVisibility(!split && !fullscreen
+                    && Glass.enabled() && Glass.floatingToolbar()
+                    ? View.VISIBLE : View.GONE);
+        }
+        if (split) {
+            if (bottomStrip != null) {
+                bottomStrip.clear();
+            }
+            if (homeBackButton != null) {
+                homeBackButton.setAlpha(1f);
+            }
+            if (homeForwardButton != null) {
+                homeForwardButton.setAlpha(1f);
+            }
+            updateTabCount();
+            for (GlassDrawable g : homeBarGlass) {
+                g.refreshAfterIdle();
+            }
+        } else {
+            syncBottomStrip();
+        }
     }
 
     private void applyToolbarStyle() {
@@ -575,6 +717,9 @@ public class BrowserActivity extends AppCompatActivity {
             return;
         }
         float target = editingAddress ? -imeLift : 0f;
+        if (homeBar != null && homeBar.getTranslationY() != target) {
+            homeBar.animate().translationY(target).setDuration(180).start();
+        }
         if (bottomBar.getTranslationY() != target) {
             bottomBar.animate().translationY(target).setDuration(180).start();
             if (barShadow != null) {
@@ -1232,6 +1377,7 @@ public class BrowserActivity extends AppCompatActivity {
             return;
         }
         boolean home = UrlUtils.isInternal(tab.url) && !isDataPage(tab.url);
+        updateBarMode();
         if (titleView != null) {
             String title = tab.title;
             if (title == null || title.isEmpty() || title.equals(tab.url)) {
@@ -1264,8 +1410,12 @@ public class BrowserActivity extends AppCompatActivity {
     }
 
     private void updateTabCount() {
+        String count = String.valueOf(Math.max(1, tabs.size()));
         if (tabCount != null) {
-            tabCount.setText(String.valueOf(Math.max(1, tabs.size())));
+            tabCount.setText(count);
+        }
+        if (homeTabCount != null) {
+            homeTabCount.setText(count);
         }
     }
 
@@ -1287,6 +1437,12 @@ public class BrowserActivity extends AppCompatActivity {
         }
         if (forwardButton != null) {
             forwardButton.setAlpha(1f);
+        }
+        if (homeBackButton != null) {
+            homeBackButton.setAlpha(1f);
+        }
+        if (homeForwardButton != null) {
+            homeForwardButton.setAlpha(1f);
         }
         updateTabCount();
         updateAddress();
@@ -1335,6 +1491,10 @@ public class BrowserActivity extends AppCompatActivity {
     }
 
     private void showMenu() {
+        if (editingAddress) {
+            hideKeyboard();
+            endEdit();
+        }
         final android.app.Dialog dialog = new android.app.Dialog(this);
         dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
         LinearLayout sheet = new LinearLayout(this);
@@ -1370,10 +1530,12 @@ public class BrowserActivity extends AppCompatActivity {
 
         final LinearLayout dots = new LinearLayout(this);
         dots.setGravity(Gravity.CENTER);
-        dots.setPadding(0, dp(2), 0, dp(2));        final List<View> dotViews = new ArrayList<>();
+        dots.setPadding(0, dp(2), 0, dp(2));
+        final List<View> dotViews = new ArrayList<>();
 
         // 挂在每个格子上：格子可点击会吞掉父容器的滑动事件
         final float[] swipeStart = new float[2];
+        final Runnable[] closeRef = new Runnable[1];
         final View.OnTouchListener[] swipeRef = new View.OnTouchListener[1];
         swipeRef[0] = (v, event) -> {
             if (event.getAction() == MotionEvent.ACTION_DOWN) {
@@ -1382,6 +1544,12 @@ public class BrowserActivity extends AppCompatActivity {
             } else if (event.getAction() == MotionEvent.ACTION_UP) {
                 float dx = event.getX() - swipeStart[0];
                 float dy = event.getY() - swipeStart[1];
+                if (dy > dp(64) && Math.abs(dy) > Math.abs(dx) * 1.2f) {
+                    if (closeRef[0] != null) {
+                        closeRef[0].run();
+                    }
+                    return true;
+                }
                 if (Math.abs(dx) > dp(48) && Math.abs(dx) > Math.abs(dy) * 1.5f) {
                     int next = currentPage[0] + (dx < 0 ? 1 : -1);
                     if (next >= 0 && next < pages.size()) {
@@ -1401,6 +1569,7 @@ public class BrowserActivity extends AppCompatActivity {
             View dot = new View(this);
             holder.addView(dot, new FrameLayout.LayoutParams(dp(5), dp(5), Gravity.CENTER));
             final int index = i;
+            holder.setOnTouchListener(swipeRef[0]);
             holder.setOnClickListener(v -> {
                 currentPage[0] = index;
                 renderMenuPage(grid, dotViews, pages.get(index), index, dialog, swipeListener);
@@ -1410,6 +1579,7 @@ public class BrowserActivity extends AppCompatActivity {
         }
         sheet.addView(dots, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        dots.setOnTouchListener(swipeRef[0]);
         dots.setVisibility(pages.size() > 1 ? View.VISIBLE : View.GONE);
 
         LinearLayout footer = new LinearLayout(this);
@@ -1422,9 +1592,14 @@ public class BrowserActivity extends AppCompatActivity {
         LinearLayout.LayoutParams chevronParams = new LinearLayout.LayoutParams(dp(44), dp(44));
         chevronParams.leftMargin = dp(12);
         footer.addView(toolButton(R.drawable.ic_chevron_down, "收起菜单",
-                v -> dialog.dismiss()), chevronParams);
+                v -> {
+                    if (closeRef[0] != null) {
+                        closeRef[0].run();
+                    }
+                }), chevronParams);
         sheet.addView(footer, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        footer.setOnTouchListener(swipeRef[0]);
 
         renderMenuPage(grid, dotViews, pages.get(0), 0, dialog, swipeListener);
 
@@ -1441,7 +1616,9 @@ public class BrowserActivity extends AppCompatActivity {
         } else {
             menuShadow = null;
         }
-        int barHeight = bottomBar == null ? dp(200) : bottomBar.getHeight();
+        View anchorBar = homeBar != null && homeBar.getVisibility() == View.VISIBLE
+                ? homeBar : bottomBar;
+        int barHeight = anchorBar == null ? dp(200) : anchorBar.getHeight();
         int barMargin = Glass.floatingToolbar() ? dp(Glass.toolbarMargin()) : 0;
         final int sidePadding = dp(14);
         floating.setPadding(sidePadding, 0, sidePadding, 0);
@@ -1451,7 +1628,18 @@ public class BrowserActivity extends AppCompatActivity {
         // R93 菜单底边距底栏顶部约 15dp
         sheetParams.bottomMargin = barHeight + barMargin + dp(15);
         floating.addView(sheet, sheetParams);
-        floating.setOnClickListener(v -> dialog.dismiss());
+        final Runnable closeMenu = () -> {
+            if (!dialog.isShowing()) {
+                return;
+            }
+            sheet.animate().translationY(dp(26)).alpha(0f).setDuration(160)
+                    .withEndAction(dialog::dismiss).start();
+            if (menuShadow != null) {
+                menuShadow.animate().translationY(dp(26)).alpha(0f).setDuration(160).start();
+            }
+        };
+        closeRef[0] = closeMenu;
+        floating.setOnClickListener(v -> closeMenu.run());
         if (Build.VERSION.SDK_INT >= 21) {
             sheet.setElevation(dp(menuGlass != null ? 0 : 24));
             sheet.setClipToOutline(false);
@@ -1519,7 +1707,8 @@ public class BrowserActivity extends AppCompatActivity {
         }
         dialog.show();
         if (menuGlass != null) {
-            sheet.postDelayed(menuGlass::refresh, 240);
+            sheet.post(menuGlass::refresh);
+            sheet.postDelayed(menuGlass::refresh, 260);
         }
     }
 
@@ -1809,7 +1998,7 @@ public class BrowserActivity extends AppCompatActivity {
             applySystemBars();
         }
         if (bottomBar != null) {
-            bottomBar.setVisibility(fullscreen ? View.GONE : View.VISIBLE);
+            updateBarMode();
         }
         toast(fullscreen ? "全屏 已开启，返回键退出" : "全屏 已关闭");
     }
@@ -2689,6 +2878,7 @@ public class BrowserActivity extends AppCompatActivity {
             return;
         }
         editingAddress = true;
+        updateBarMode();
         titleView.setVisibility(View.GONE);
         address.setVisibility(View.VISIBLE);
         Tab tab = currentTab();
@@ -2706,6 +2896,7 @@ public class BrowserActivity extends AppCompatActivity {
 
     private void endEdit() {
         editingAddress = false;
+        updateBarMode();
         address.setVisibility(View.GONE);
         titleView.setVisibility(View.VISIBLE);
         updateBottomBarLift();
