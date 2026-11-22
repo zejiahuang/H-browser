@@ -85,6 +85,10 @@ public final class Ui {
     }
 
     public static LinearLayout topBar(Activity activity, String title) {
+        return topBar(activity, title, (View[]) null);
+    }
+
+    public static LinearLayout topBar(Activity activity, String title, View... right) {
         LinearLayout bar = row(activity);
         bar.setMinimumHeight(dp(activity, 56));
         bar.setPadding(dp(activity, 4), dp(activity, 4), dp(activity, 12), dp(activity, 4));
@@ -103,7 +107,18 @@ public final class Ui {
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
         params.setMarginStart(dp(activity, 8));
         bar.addView(text, params);
-        return bar;
+        if (right != null) {
+            for (View view : right) {
+                bar.addView(view);
+            }
+        }
+        LinearLayout outer = column(activity);
+        outer.addView(bar);
+        View line = new View(activity);
+        line.setBackgroundColor(color(activity, R.color.outline_variant));
+        outer.addView(line, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, Math.max(1, dp(activity, 1) / 2)));
+        return outer;
     }
 
     public static TextView text(Context context, String value, float sizeSp, int colorRes) {

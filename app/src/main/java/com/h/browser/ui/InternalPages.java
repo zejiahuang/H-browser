@@ -61,48 +61,34 @@ public final class InternalPages {
 
     private static String wrap(String title, String body) {
         return "<!doctype html><html><head><meta charset=utf-8>"
+                + "<title>" + title + "</title>"
                 + "<meta name=viewport content='width=device-width,initial-scale=1'>"
                 + CSS + "</head><body><div class=wrap><h1>" + title + "</h1>" + body + "</div></body></html>";
     }
 
     private static String home(Context context) {
-        StringBuilder sb = new StringBuilder();
-        sb.append("<div class=wrap><div style='text-align:center;padding:18px 0 10px'>"
-                + "<h1 style='font-size:40px;margin:0'>氢</h1>"
-                + "<div class=sub style='margin:6px 0 0'>轻量 · 干净 · 属于你</div></div>");
-        sb.append("<form onsubmit='event.preventDefault();HNative.search(this.q.value);return false'>");
-        sb.append("<input name=q placeholder='搜索或输入网址' autocomplete=off autocapitalize=off spellcheck=false></form>");
-        List<Db.Item> marks = Db.get(context).bookmarks(8);
-        if (!marks.isEmpty()) {
-            sb.append("<div class=card><h2>快速访问</h2><div>");
-            for (Db.Item item : marks) {
-                sb.append("<a class=chip href='javascript:void(0)' onclick=\"HNative.openUrl('")
-                        .append(js(UrlUtils.escapeHtml(item.url))).append("')\">")
-                        .append(UrlUtils.escapeHtml(shortTitle(item.title, item.url))).append("</a>");
-            }
-            sb.append("</div></div>");
-        }
-        List<Db.Item> history = Db.get(context).history(6);
-        if (!history.isEmpty()) {
-            sb.append("<div class=card><h2>最近</h2>");
-            for (Db.Item item : history) {
-                sb.append("<div class=row><div class=t><b>")
-                        .append(UrlUtils.escapeHtml(shortTitle(item.title, item.url)))
-                        .append("</b><span>").append(UrlUtils.escapeHtml(item.url)).append("</span></div>");
-                sb.append("<button class=small onclick=\"HNative.openUrl('")
-                        .append(js(UrlUtils.escapeHtml(item.url))).append("')\">打开</button></div>");
-            }
-            sb.append("</div>");
-        }
-        sb.append("<div class=card><div class=row><div class=t><b>广告拦截</b><span>已拦截 ")
-                .append(AdBlock.blockedCount()).append(" 次 · 规则 ").append(AdBlock.ruleCount())
-                .append(" 条</span></div><button class=small onclick=\"HNative.openUrl('v://log')\">查看</button></div>");
-        sb.append("<div class=row><div class=t><b>外部工具</b><span>书签、历史、脚本、同步</span></div>"
-                + "<button class=small onclick='HNative.openSettings()'>设置</button></div></div>");
-        sb.append("<div class=sub style='margin-top:18px'>H browser 0.2 · 系统 WebView 内核</div></div>");
-        return "<!doctype html><html><head><meta charset=utf-8>"
+        return "<!doctype html><html><head><meta charset=utf-8><title>主页</title>"
                 + "<meta name=viewport content='width=device-width,initial-scale=1'>"
-                + CSS + "</head><body>" + sb + "</body></html>";
+                + "<style>html,body{margin:0;height:100%;background:#000}"
+                + "*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}"
+                + ".home{min-height:100%;display:flex;flex-direction:column;align-items:center;padding:0 24px}"
+                + ".logo{margin-top:30vh;width:72px;height:60px}"
+                + ".search{width:100%;max-width:600px;margin-top:38px}"
+                + "input{width:100%;height:50px;border:1.5px solid #343434;border-radius:25px;"
+                + "background:#1A2122;color:#fff;font-size:15px;padding:0 20px;outline:none}"
+                + "input:focus{border-color:#70C8CE}"
+                + "input::placeholder{color:#8A9494}"
+                + "</style></head><body><div class=home>"
+                + "<svg class=logo viewBox='0 0 72 60' aria-label='H'><defs>"
+                + "<linearGradient id=g x1='10' y1='6' x2='62' y2='54' gradientUnits='userSpaceOnUse'>"
+                + "<stop stop-color='#5BE7F0'/><stop offset='1' stop-color='#00A7B5'/>"
+                + "</linearGradient></defs>"
+                + "<rect x='10' y='6' width='18' height='48' rx='3.2' fill='url(#g)'/>"
+                + "<rect x='44' y='6' width='18' height='48' rx='3.2' fill='url(#g)'/>"
+                + "<rect x='27' y='26' width='18' height='12' rx='3.2' fill='url(#g)'/></svg>"
+                + "<form class=search onsubmit='event.preventDefault();HNative.search(this.q.value);return false'>"
+                + "<input name=q value='' placeholder='搜索或输入网址' autocomplete=off autocapitalize=off spellcheck=false>"
+                + "</form></div></body></html>";
     }
 
     private static String bookmarks(Context context) {
@@ -167,7 +153,7 @@ public final class InternalPages {
         return "<div class=card><h2>氢 (H browser) 0.2.0</h2>"
                 + "<div class=sub>一个基于系统 WebView 的轻量浏览器。无遥测，无账号，无私有云依赖。</div></div>"
                 + "<div class=card><h2>已实现</h2><div class=sub>多标签 · 广告拦截 · 用户脚本 · 阅读模式 · AI 助手 · 翻译 · 朗读 · "
-                + "媒体嗅探 · 下载 · PDF · 扫码 · 密码库 · WebDAV 同步 · 无痕浏览 · 主页皮肤 · 莫奈取色 · "
+                + "媒体嗅探 · 下载 · PDF · 扫码 · 密码库 · WebDAV 同步 · 无痕浏览 · 玻璃模糊 · 悬浮工具栏 · "
                 + "页内查找 · 网页字号 · 工具栏自定义 · 书签/历史导入导出</div></div>"
                 + "<div class=card><h2>许可与致谢</h2><div class=sub>Apache-2.0。图标基于 Material Icons。"
                 + "广告规则来自用户订阅（默认 EasyList China，CC BY-SA），本应用不内置第三方规则文件。</div></div>";

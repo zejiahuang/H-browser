@@ -86,15 +86,13 @@ public final class Db extends SQLiteOpenHelper {
         getWritableDatabase().execSQL("DELETE FROM history WHERE _id NOT IN (SELECT _id FROM history ORDER BY time DESC LIMIT 3000)");
     }
 
-    private static final String NOT_SKIN = "url NOT LIKE 'https://appassets.androidplatform.net/skin/%'";
-
     public synchronized List<Item> history(int limit) {
-        return query("SELECT _id,title,url,time FROM history WHERE " + NOT_SKIN + " ORDER BY time DESC LIMIT " + limit);
+        return query("SELECT _id,title,url,time FROM history ORDER BY time DESC LIMIT " + limit);
     }
 
     public synchronized List<Item> searchHistory(String query, int limit) {
         String like = "%" + query + "%";
-        return query("SELECT _id,title,url,time FROM history WHERE (" + NOT_SKIN + ") AND (title LIKE ? OR url LIKE ?) ORDER BY time DESC LIMIT " + limit, like, like);
+        return query("SELECT _id,title,url,time FROM history WHERE (title LIKE ? OR url LIKE ?) ORDER BY time DESC LIMIT " + limit, like, like);
     }
 
     public synchronized void removeHistory(long id) {

@@ -1,19 +1,26 @@
 package com.h.browser.ui;
 
-import android.app.Activity;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.Color;
+import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
+import android.app.WallpaperManager;
 import android.os.Bundle;
+import android.text.Editable;
 import android.text.InputType;
+import android.text.TextWatcher;
 import android.view.Gravity;
+import android.view.View;
 import android.view.ViewGroup;
+import android.webkit.CookieManager;
+import android.webkit.WebView;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
-import com.google.android.material.materialswitch.MaterialSwitch;
+import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -26,14 +33,12 @@ import com.h.browser.adblock.AdBlock;
 import com.h.browser.ai.AiChatActivity;
 import com.h.browser.data.Backup;
 import com.h.browser.data.Prefs;
-import com.h.browser.theme.Monet;
-import com.h.browser.theme.SkinStore;
-import com.h.browser.widget.BaseSearchWidget;
 import com.h.browser.download.DownloadActivity;
 import com.h.browser.sniffer.MediaListActivity;
 import com.h.browser.sync.SyncActivity;
 import com.h.browser.userscript.UserScripts;
 import com.h.browser.vault.VaultActivity;
+import com.h.browser.widget.BaseSearchWidget;
 
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -51,18 +56,64 @@ public class SettingsActivity extends AppCompatActivity {
     private static final int REQ_EXPORT_BM = 3002;
     private static final int REQ_EXPORT_HISTORY = 3003;
 
+    private static final String[][] CATEGORIES = {
+            {"general", "通用", "搜索引擎 主页 浏览器标识 字体 下载 嗅探 书签 历史 小组件 无痕 语言 同步 AI 屏幕方向 操作设定"},
+            {"personal", "个性化", "菜单样式 材质样式 工具栏设置 模糊 玻璃 圆角 布局 背景 外观"},
+            {"custom", "定制", "主题 模糊 玻璃 工具栏 深色 背景 Logo 搜索框 外观"},
+            {"privacy", "隐私", "无痕 密码 清除 跟踪 WebRTC 同步 WebDAV"},
+            {"advanced", "高级", "广告 拦截 订阅 AI 翻译 朗读 接口 规则 安全浏览 SSL 调试"},
+            {"scripts", "脚本", "脚本 用户脚本 导入"},
+            {"experimental", "实验", "模糊 玻璃 背景"},
+            {"about", "关于", "版本 许可 反馈 协议 隐私政策"}
+    };
+
     private interface Saver {
         void save(String value);
     }
 
+    private interface BooleanSaver {
+        void save(boolean value);
+    }
+
+    private String cat;
+    private LinearLayout root;
     private LinearLayout content;
-    private LinearLayout card;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        LinearLayout root = Ui.screen(this);
-        root.addView(Ui.topBar(this, "设置"));
+        cat = getIntent().getStringExtra("cat");
+        root = Ui.screen(this);
+        if (pref("settings_wallpaper")) {
+            try {
+                WallpaperManager manager = WallpaperManager.getInstance(this);
+                getWindow().setBackgroundDrawable(manager.getDrawable());
+                root.setBackgroundColor(Glass.night(this) ? 0x99000000 : 0xB8F2F7F7);
+            } catch (Throwable ignored) {
+            }
+        }
+        LinearLayout top;
+        if ("scripts".equals(cat)) {
+            android.widget.ImageButton add = new android.widget.ImageButton(this);
+            add.setImageResource(R.drawable.ic_add);
+            add.setBackground(Ui.ripple(this));
+            add.setContentDescription("添加脚本");
+            int pad = Ui.dp(this, 10);
+            add.setPadding(pad, pad, pad, pad);
+            add.setOnClickListener(v -> importFromClipboard());
+            add.setLayoutParams(new LinearLayout.LayoutParams(Ui.dp(this, 44), Ui.dp(this, 44)));
+            TextView update = Ui.text(this, "更新", 15, R.color.on_surface);
+            update.setGravity(Gravity.CENTER);
+            update.setBackground(Ui.ripple(this));
+            update.setPadding(Ui.dp(this, 12), 0, Ui.dp(this, 4), 0);
+            update.setOnClickListener(v -> toast("已安装脚本均为最新解析版本"));
+            update.setLayoutParams(new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, Ui.dp(this, 44)));
+            top = Ui.topBar(this, labelOf(cat), add, update);
+        } else {
+            top = Ui.topBar(this, cat == null ? "设置" : labelOf(cat));
+        }
+        root.addView(top);
 
         ScrollView scroll = new ScrollView(this);
         content = Ui.column(this);
@@ -71,154 +122,710 @@ public class SettingsActivity extends AppCompatActivity {
         root.addView(scroll, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
-        build();
+        if (cat == null) {
+            buildMain();
+        } else {
+            buildCategory(cat);
+        }
+        if ("custom".equals(cat)) {
+            root.addView(buildDesignerTabs(), new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(this, 48)));
+        }
     }
 
-    private void build() {
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        recreate();
+    }
+
+    private static String labelOf(String key) {
+        if ("toolbar".equals(key)) {
+            return "工具栏设置";
+        }
+        for (String[] item : CATEGORIES) {
+            if (item[0].equals(key)) {
+                return item[1];
+            }
+        }
+        return "设置";
+    }
+
+    private void buildMain() {
         content.removeAllViews();
-        card = null;
 
-        section("搜索与主页");
-        add(Ui.item(this, "搜索引擎",
-                Prefs.searchEngine(), () -> inputDialog("搜索引擎（用 %s 代表关键词）",
-                Prefs.searchEngine(), Prefs::setSearchEngine)));
-        add(Ui.item(this, "主页", Prefs.homepage(),
-                () -> inputDialog("主页地址", Prefs.homepage(), Prefs::setHomepage)));
+        EditText search = new EditText(this);
+        search.setHint("搜索");
+        search.setTextSize(14);
+        search.setSingleLine(true);
+        search.setTextColor(Ui.color(this, R.color.on_surface));
+        search.setHintTextColor(Ui.color(this, R.color.on_surface_variant));
+        search.setBackground(pill());
+        int hpad = Ui.dp(this, 16);
+        search.setPadding(hpad, 0, hpad, 0);
+        LinearLayout.LayoutParams searchParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(this, 40));
+        searchParams.setMargins(Ui.dp(this, 14), Ui.dp(this, 10), Ui.dp(this, 14), Ui.dp(this, 10));
+        content.addView(search, searchParams);
 
-        section("外观");
-        add(Ui.item(this, "主题模式", themeName(),
-                () -> new MaterialAlertDialogBuilder(this).setTitle("主题模式")
-                        .setItems(new String[]{"跟随系统", "浅色", "深色"}, (d, which) -> {
+        final List<View> rows = new ArrayList<>();
+        for (String[] item : CATEGORIES) {
+            final String key = item[0];
+            LinearLayout row = Ui.row(this);
+            row.setBackground(Ui.ripple(this));
+            row.setMinimumHeight(Ui.dp(this, 61));
+            row.setPadding(Ui.dp(this, 16), 0, Ui.dp(this, 16), 0);
+            TextView label = Ui.text(this, item[1], 14, R.color.on_surface_variant);
+            label.setTextColor(0xFFBFBFBF);
+            row.addView(label, new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            row.setOnClickListener(v -> startActivity(new Intent(this, SettingsActivity.class)
+                    .putExtra("cat", key)));
+            content.addView(row, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            rows.add(row);
+        }
+
+        search.addTextChangedListener(new TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) {
+            }
+
+            @Override
+            public void onTextChanged(CharSequence s, int start, int before, int count) {
+            }
+
+            @Override
+            public void afterTextChanged(Editable s) {
+                String query = s.toString().trim().toLowerCase();
+                for (int i = 0; i < rows.size(); i++) {
+                    String[] item = CATEGORIES[i];
+                    boolean match = query.isEmpty()
+                            || item[1].toLowerCase().contains(query)
+                            || item[2].toLowerCase().contains(query);
+                    rows.get(i).setVisibility(match ? View.VISIBLE : View.GONE);
+                }
+            }
+        });
+    }
+
+    private GradientDrawable pill() {
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(0xFF202020);
+        bg.setCornerRadius(Ui.dp(this, 20));
+        return bg;
+    }
+
+    private void buildCategory(String key) {
+        content.removeAllViews();
+        switch (key) {
+            case "general":
+                buildGeneral();
+                break;
+            case "personal":
+                buildPersonal();
+                break;
+            case "toolbar":
+                buildToolbarSettings();
+                break;
+            case "custom":
+                buildDesigner();
+                break;
+            case "privacy":
+                buildPrivacy();
+                break;
+            case "advanced":
+                buildAdvanced();
+                break;
+            case "scripts":
+                buildScripts();
+                break;
+            case "experimental":
+                buildExperimental();
+                break;
+            case "about":
+                buildAbout();
+                break;
+            default:
+                buildMain();
+                break;
+        }
+    }
+
+    private void buildGeneral() {
+        flat("同步", null, null,
+                () -> startActivity(new Intent(this, SyncActivity.class)));
+        flat("浏览器标识", uaName(), null, this::uaDialog);
+        flat("清除数据", null, null, this::clearData);
+        flat("广告拦截", null, null, this::adblockDialog);
+        flat("网站设定", null, null,
+                () -> info("网站设定", "在网页中通过菜单可查看和调整当前站点设定。"));
+        flat("密码管理器", null, null,
+                () -> startActivity(new Intent(this, VaultActivity.class)));
+        flat("夜间模式", null, null, this::themeDialog);
+        flat("阅读模式", null, null,
+                () -> info("阅读模式", "在网页菜单中点「阅读模式」即可提取正文。"));
+        flat("工具栏设置", null, null, this::toolbarDialog);
+        flat("定制菜单", null, null,
+                () -> info("定制菜单", "请在浏览器菜单中点「定制菜单」勾选要显示的项目。"));
+        flat("定制长按菜单", null, null,
+                () -> info("定制长按菜单", "长按网页中的链接或图片即可打开操作菜单。"));
+        flat("语言", null, null,
+                () -> info("语言", "当前版本仅提供简体中文。"));
+        flat("搜索设置", Prefs.searchEngine(), null,
+                () -> inputDialog("搜索引擎（用 %s 代表关键词）",
+                        Prefs.searchEngine(), Prefs::setSearchEngine));
+        flat("AI 设置", aiSummary(), null, this::aiDialog);
+        flat("屏幕方向", orientationName(), null, this::orientationDialog);
+        flat("下载目录", "/sdcard/Download", null,
+                () -> info("下载目录", "下载文件保存在系统下载目录 /sdcard/Download。"));
+        flat("下载器", "系统下载器", null,
+                () -> info("下载器", "使用系统 DownloadManager 下载，支持通知栏进度。"));
+        flat("外置视频播放器", "系统分享", null,
+                () -> info("外置视频播放器", "点击视频时使用系统分享面板选择播放器。"));
+        switchFlat("退出时清除数据", "退出浏览器时清理缓存与 Cookie",
+                pref("clear_on_exit"), value -> setPref("clear_on_exit", value));
+        flat("字体", Prefs.fontZoom() + "%", null, this::zoomDialog);
+        flat("操作设定", "手势、快捷方式", null,
+                () -> info("操作设定", "下拉刷新：" + (Prefs.pullRefresh() ? "开" : "关")
+                        + "；边缘滑动：" + (Prefs.edgeGesture() ? "开" : "关")
+                        + "。可在「定制」中调整。"));
+        flat("导入/备份书签", "HTML 书签文件", null, this::backupDialog);
+    }
+
+    private void buildPersonal() {
+        FrameLayout preview = new FrameLayout(this);
+        GradientDrawable bg = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
+                new int[]{0xFFBFE3E3, 0xFFE6F1F0, 0xFFF5EEE5});
+        bg.setCornerRadius(Ui.dp(this, 24));
+        bg.setStroke(Math.max(1, Ui.dp(this, 1)),
+                Glass.night(this) ? 0x22FFFFFF : 0x33000000);
+        preview.setBackground(bg);
+        if (pref("settings_wallpaper")) {
+            try {
+                android.graphics.drawable.Drawable wp =
+                        android.app.WallpaperManager.getInstance(this).getDrawable();
+                if (wp != null) {
+                    android.widget.ImageView wallpaper = new android.widget.ImageView(this);
+                    wallpaper.setImageDrawable(wp);
+                    wallpaper.setScaleType(android.widget.ImageView.ScaleType.CENTER_CROP);
+                    wallpaper.setClipToOutline(true);
+                    G2Path.applyOutline(wallpaper, Ui.dp(this, 24), 0f);
+                    preview.addView(wallpaper, new FrameLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT));
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+
+        LinearLayout mini = new LinearLayout(this);
+        mini.setOrientation(LinearLayout.VERTICAL);
+        mini.setPadding(Ui.dp(this, 8), Ui.dp(this, 6), Ui.dp(this, 8), Ui.dp(this, 6));
+        if (Glass.enabled() && android.os.Build.VERSION.SDK_INT >= 26) {
+            GlassDrawable miniGlass = new GlassDrawable(getWindow(), true, 20, Glass.curve());
+            miniGlass.setDrawShadow(false);
+            mini.setBackground(miniGlass);
+        } else {
+            mini.setBackground(Glass.panel(this, 20));
+        }
+        LinearLayout pill = new LinearLayout(this);
+        pill.setGravity(Gravity.CENTER_VERTICAL);
+        pill.setPadding(Ui.dp(this, 12), 0, Ui.dp(this, 12), 0);
+        GradientDrawable pillBg = new GradientDrawable();
+        pillBg.setColor(Glass.night(this) ? 0xCC2A3031 : 0xCCEFEFEF);
+        pillBg.setCornerRadius(Ui.dp(this, 13));
+        pill.setBackground(pillBg);
+        pill.addView(Ui.text(this, "主页", 12, R.color.on_surface));
+        mini.addView(pill, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(this, 28)));
+        LinearLayout nav = Ui.row(this);
+        nav.setGravity(Gravity.CENTER);
+        int[] icons = {R.drawable.ic_back, R.drawable.ic_forward, R.drawable.ic_home,
+                R.drawable.ic_tabs_count, R.drawable.ic_menu};
+        for (int i = 0; i < icons.length; i++) {
+            android.widget.ImageView icon = new android.widget.ImageView(this);
+            icon.setImageResource(icons[i]);
+            icon.setColorFilter(androidx.core.content.ContextCompat.getColor(
+                    this, R.color.on_surface));
+            LinearLayout holder = new LinearLayout(this);
+            holder.setGravity(Gravity.CENTER);
+            holder.addView(icon, new LinearLayout.LayoutParams(Ui.dp(this, 18), Ui.dp(this, 18)));
+            nav.addView(holder, new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.MATCH_PARENT, 1f));
+        }
+        LinearLayout.LayoutParams navParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(this, 32));
+        navParams.topMargin = Ui.dp(this, 6);
+        mini.addView(nav, navParams);
+
+        FrameLayout.LayoutParams miniParams = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM);
+        miniParams.setMargins(Ui.dp(this, 18), 0, Ui.dp(this, 18), Ui.dp(this, 18));
+        preview.addView(mini, miniParams);
+
+        LinearLayout.LayoutParams previewParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(this, 190));
+        previewParams.setMargins(Ui.dp(this, 14), Ui.dp(this, 12),
+                Ui.dp(this, 14), Ui.dp(this, 10));
+        content.addView(preview, previewParams);
+
+        flat("菜单样式", Glass.menuSimple() ? "简约" : "完整", null,
+                () -> choiceDialog("菜单样式", new String[]{"完整", "简约"},
+                        new int[]{0, 1}, "menu_style", 0));
+        flat("材质样式", Glass.materialLabel(), null,
+                () -> choiceDialog("材质样式",
+                        new String[]{"柔光玻璃", "磨砂", "液态玻璃", "纯色"},
+                        new int[]{0, 1, 2, 3}, "glass_style", 0));
+        flat("工具栏设置", toolbarSummary(), null,
+                () -> startActivity(new Intent(this, SettingsActivity.class)
+                        .putExtra("cat", "toolbar")));
+        slider("外层圆角", 24, 48, Glass.outerRadius(), "dp", "glass_outer_radius");
+        slider("G2 曲线", 0, 100, Glass.curve(), "%", "glass_curve");
+        slider("地址框上方间距", 0, 20, Glass.addressGap(), "dp", "glass_gap");
+    }
+
+    private void buildToolbarSettings() {
+        switchFlat("模糊效果", "为菜单、悬浮工具栏与页面顶部启用玻璃模糊",
+                Glass.enabled(), value -> {
+                    setPref("glass", value);
+                    recreate();
+                });
+        flat("模糊半径", Glass.radius() + "dp", null, () -> choiceDialog("模糊半径",
+                new String[]{"12dp", "18dp", "24dp", "32dp", "40dp"},
+                new int[]{12, 18, 24, 32, 40}, "glass_radius", 24));
+        switchFlat("渐进式模糊", "页面顶部随滚动渐隐",
+                pref("progressive_blur", true),
+                value -> setPref("progressive_blur", value));
+        switchFlat("沉浸悬浮工具栏", "底栏以玻璃面板悬浮在页面之上",
+                pref("floating_toolbar", true),
+                value -> {
+                    setPref("floating_toolbar", value);
+                    recreate();
+                });
+        flat("工具栏边距", Glass.toolbarMargin() + "dp", null,
+                () -> choiceDialog("工具栏边距",
+                        new String[]{"0dp", "8dp", "12dp", "16dp", "20dp"},
+                        new int[]{0, 8, 12, 16, 20}, "toolbar_margin", 16));
+    }
+
+    private void slider(String title, final int min, final int max, int value,
+                        final String suffix, final String key) {
+        LinearLayout block = Ui.column(this);
+        block.setPadding(Ui.dp(this, 20), Ui.dp(this, 14), Ui.dp(this, 20), Ui.dp(this, 4));
+        LinearLayout head = Ui.row(this);
+        head.addView(Ui.text(this, title, 14, R.color.on_surface),
+                new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        final TextView current = Ui.text(this, value + suffix, 14, R.color.primary);
+        head.addView(current);
+        block.addView(head);
+        SeekBar bar = new SeekBar(this);
+        bar.setMax(max - min);
+        bar.setProgress(Math.max(0, Math.min(max - min, value - min)));
+        bar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                current.setText((min + progress) + suffix);
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar seekBar) {
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar seekBar) {
+                Prefs.get().edit().putInt(key, min + seekBar.getProgress()).apply();
+            }
+        });
+        block.addView(bar, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        content.addView(block, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+    }
+
+    private void buildPrivacy() {
+        switchFlat("不跟踪", null,
+                pref("dnt", true), value -> setPref("dnt", value));
+        switchFlat("禁用 WebRTC", null,
+                pref("no_webrtc"), value -> setPref("no_webrtc", value));
+        switchFlat("不出售或分享数据",
+                "请求网站不出售或分享我的数据以保护隐私（实验性）",
+                pref("no_sell"), value -> setPref("no_sell", value));
+    }
+
+    private void buildAdvanced() {
+        switchFlat("流量节省", "请求网站节省流量",
+                pref("data_saver"), value -> setPref("data_saver", value));
+        switchFlat("自动展示嗅探按钮", null,
+                pref("auto_sniff"), value -> setPref("auto_sniff", value));
+        switchFlat("允许调试网页", null,
+                pref("debug_web"), value -> {
+                    setPref("debug_web", value);
+                    if (android.os.Build.VERSION.SDK_INT >= 19) {
+                        WebView.setWebContentsDebuggingEnabled(value);
+                    }
+                });
+        switchFlat("禁用预测返回手势", null,
+                pref("no_predictive"), value -> setPref("no_predictive", value));
+        switchFlat("禁用 Custom Tabs", "跳过第三方应用通过 Custom Tabs 打开链接时的中转页",
+                pref("no_custom_tabs"), value -> setPref("no_custom_tabs", value));
+        switchFlat("禁用安全浏览",
+                "安全浏览允许 WebView 通过验证链接来防止恶意软件和网络钓鱼攻击",
+                pref("no_safe_browsing"), value -> setPref("no_safe_browsing", value));
+        switchFlat("忽略 SSL 证书警告",
+                "请小心，忽略 SSL 证书警告可能会使网站的连接不安全",
+                pref("ignore_ssl"), value -> setPref("ignore_ssl", value));
+    }
+
+    private void buildScripts() {
+        List<UserScripts.Script> scripts = UserScripts.list();
+        if (scripts.isEmpty()) {
+            TextView empty = Ui.text(this, "\\_(ツ)_/¯", 24, R.color.on_surface_variant);
+            empty.setGravity(Gravity.CENTER);
+            empty.setPadding(0, Ui.dp(this, 340), 0, 0);
+            content.addView(empty, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            return;
+        }
+        for (UserScripts.Script script : scripts) {
+            flat(script.name, "用户脚本", null, () ->
+                    new MaterialAlertDialogBuilder(this)
+                            .setTitle(script.name)
+                            .setMessage("要删除这个脚本吗？")
+                            .setPositiveButton("删除", (d, w) -> {
+                                UserScripts.delete(script.id);
+                                buildCategory("scripts");
+                            })
+                            .setNegativeButton("取消", null)
+                            .show());
+        }
+    }
+
+    private void buildAbout() {
+        LinearLayout head = Ui.column(this);
+        head.setGravity(Gravity.CENTER_HORIZONTAL);
+        head.setPadding(0, Ui.dp(this, 36), 0, Ui.dp(this, 28));
+        HMarkView logo = new HMarkView(this);
+        logo.setScale(0.67f);
+        head.addView(logo);
+        TextView name = Ui.text(this, "氢", 17, R.color.on_surface);
+        name.setTypeface(name.getTypeface(), android.graphics.Typeface.BOLD);
+        LinearLayout.LayoutParams nameParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        nameParams.topMargin = Ui.dp(this, 18);
+        head.addView(name, nameParams);
+        head.addView(Ui.text(this, version(), 13, R.color.on_surface_variant),
+                new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        content.addView(head, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        flat("检查更新", null, null,
+                () -> toast("已是最新版本"));
+        flat("意见反馈", null, null, this::feedback);
+        flat("通过邮件联系我", null, null, () -> {
+            try {
+                startActivity(new Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:")));
+            } catch (Throwable t) {
+                toast("没有可用的邮件应用");
+            }
+        });
+        flat("协助翻译", null, null, () ->
+                info("协助翻译", "欢迎通过 GitHub 提交界面与文档翻译。"));
+        flat("使用协议", null, null, () ->
+                info("使用协议", "本应用按现状提供，不附带任何明示或暗示担保。"
+                        + "你需自行承担使用风险并遵守当地法律法规。"));
+        flat("隐私政策", null, null, () ->
+                info("隐私政策", "本应用没有遥测、统计或账号系统，"
+                        + "书签、历史、密码与设置均保存在本机。\n\n"
+                        + "仅当你主动使用 AI、翻译或 WebDAV 时，"
+                        + "相关数据才会发送到你自行配置的服务器。"));
+        flat("开源许可协议", null, null, () ->
+                info("开源许可协议", "本应用源代码采用 Apache License 2.0。\n\n"
+                        + "广告拦截种子规则参考 EasyList 格式，"
+                        + "EasyList 由社区维护，采用 CC BY-SA 3.0 许可。"));
+    }
+
+    private void buildDesigner() {
+        root.setBackgroundColor(0xFF222222);
+        content.setPadding(0, 0, 0, 0);
+        LinearLayout preview = new LinearLayout(this);
+        preview.setOrientation(LinearLayout.VERTICAL);
+        preview.setGravity(Gravity.CENTER_HORIZONTAL);
+        preview.setPadding(0, Ui.dp(this, 190), 0, 0);
+        GradientDrawable bg = new GradientDrawable();
+        int homeBg = Prefs.get().getInt("home_bg", 0);
+        bg.setColor(homeBg != 0 ? homeBg : 0xFF000000);
+        bg.setCornerRadius(Ui.dp(this, 24));
+        preview.setBackground(bg);
+        HMarkView logo = new HMarkView(this);
+        logo.setScale(0.94f);
+        preview.addView(logo, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        LinearLayout searchPill = new LinearLayout(this);
+        searchPill.setOrientation(LinearLayout.HORIZONTAL);
+        searchPill.setGravity(Gravity.CENTER_VERTICAL);
+        searchPill.setPadding(Ui.dp(this, 16), 0, Ui.dp(this, 16), 0);
+        GradientDrawable outline = new GradientDrawable();
+        outline.setColor(Color.TRANSPARENT);
+        outline.setStroke(Math.max(1, Ui.dp(this, 1)), 0xFF343434);
+        outline.setCornerRadius(Ui.dp(this, 23));
+        searchPill.setBackground(outline);
+        TextView pillHint = Ui.text(this, "搜索或输入网址", 13, R.color.on_surface_variant);
+        searchPill.addView(pillHint);
+        LinearLayout.LayoutParams pillParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(this, 46));
+        pillParams.setMargins(Ui.dp(this, 16), Ui.dp(this, 27), Ui.dp(this, 16), 0);
+        preview.addView(searchPill, pillParams);
+
+        LinearLayout.LayoutParams previewParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(this, 600));
+        previewParams.setMargins(Ui.dp(this, 11), Ui.dp(this, 15),
+                Ui.dp(this, 11), Ui.dp(this, 17));
+        content.addView(preview, previewParams);
+    }
+
+    private LinearLayout buildDesignerTabs() {
+        LinearLayout tabs = Ui.row(this);
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(0xFF070707);
+        bg.setCornerRadii(new float[]{Ui.dp(this, 14), Ui.dp(this, 14),
+                Ui.dp(this, 14), Ui.dp(this, 14), 0, 0, 0, 0});
+        tabs.setBackground(bg);
+        String[] labels = {"Logo", "搜索框", "背景", "收藏", "高级"};
+        Runnable[] actions = {
+                this::designerLogo,
+                () -> inputDialog("搜索引擎（用 %s 代表关键词）",
+                        Prefs.searchEngine(), Prefs::setSearchEngine),
+                this::backgroundDialog,
+                () -> info("主页收藏", "主页收藏以快捷方式显示在搜索框下方，"
+                        + "可在书签页长按设置。"),
+                () -> startActivity(new Intent(this, SettingsActivity.class)
+                        .putExtra("cat", "experimental"))
+        };
+        for (int i = 0; i < labels.length; i++) {
+            final int index = i;
+            TextView tab = Ui.text(this, labels[i], 14, R.color.on_surface_variant);
+            tab.setGravity(Gravity.CENTER);
+            tab.setBackground(Ui.ripple(this));
+            tab.setOnClickListener(v -> actions[index].run());
+            tabs.addView(tab, new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.MATCH_PARENT, 1f));
+        }
+        return tabs;
+    }
+
+    private void designerLogo() {
+        info("Logo", "主页搜索框上方固定显示“H”标识。");
+    }
+
+    private void backgroundDialog() {
+        final String[] labels = {"跟随主题", "深色", "纯黑", "氢青", "暖白"};
+        final int[] colors = {0, 0xFF101415, 0xFF000000, 0xFF00343A, 0xFFF2F7F7};
+        int current = Prefs.get().getInt("home_bg", 0);
+        int checked = 0;
+        for (int i = 0; i < colors.length; i++) {
+            if (colors[i] == current) checked = i;
+        }
+        new MaterialAlertDialogBuilder(this).setTitle("主页背景")
+                .setSingleChoiceItems(labels, checked, (dialog, which) -> {
+                    dialog.dismiss();
+                    Prefs.get().edit().putInt("home_bg", colors[which]).apply();
+                    toast("主页背景已更新");
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void flat(String title, String summary, View right, Runnable action) {
+        LinearLayout row = Ui.row(this);
+        row.setPadding(Ui.dp(this, 20), Ui.dp(this, 16), Ui.dp(this, 20), Ui.dp(this, 16));
+        row.setMinimumHeight(Ui.dp(this, 62));
+        if (action != null) {
+            row.setBackground(Ui.ripple(this));
+            row.setOnClickListener(v -> action.run());
+        }
+        LinearLayout texts = Ui.column(this);
+        texts.addView(Ui.text(this, title, 14, R.color.on_surface));
+        if (summary != null && !summary.isEmpty()) {
+            texts.addView(Ui.text(this, summary, 12, R.color.on_surface_variant));
+        }
+        row.addView(texts, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        if (right != null) {
+            row.addView(right);
+        }
+        content.addView(row, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+    }
+
+    private void switchFlat(String title, String summary, boolean checked,
+                            final BooleanSaver saver) {
+        LinearLayout row = Ui.row(this);
+        row.setPadding(Ui.dp(this, 20), Ui.dp(this, 16), Ui.dp(this, 16), Ui.dp(this, 16));
+        row.setMinimumHeight(Ui.dp(this, 62));
+        row.setBackground(Ui.ripple(this));
+        LinearLayout texts = Ui.column(this);
+        texts.addView(Ui.text(this, title, 14, R.color.on_surface));
+        if (summary != null && !summary.isEmpty()) {
+            texts.addView(Ui.text(this, summary, 12, R.color.on_surface_variant));
+        }
+        row.addView(texts, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        final DotToggle toggle = new DotToggle(this, checked);
+        row.addView(toggle, new LinearLayout.LayoutParams(Ui.dp(this, 18), Ui.dp(this, 18)));
+        row.setOnClickListener(v -> {
+            toggle.setChecked(!toggle.isChecked());
+            saver.save(toggle.isChecked());
+        });
+        content.addView(row, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+    }
+
+    private boolean pref(String key) {
+        return pref(key, false);
+    }
+
+    private boolean pref(String key, boolean fallback) {
+        return Prefs.get().getBoolean(key, fallback);
+    }
+
+    private void setPref(String key, boolean value) {
+        Prefs.get().edit().putBoolean(key, value).apply();
+    }
+
+    private void info(String title, String message) {
+        new MaterialAlertDialogBuilder(this).setTitle(title).setMessage(message)
+                .setPositiveButton("好", null).show();
+    }
+
+    private void toast(String message) {
+        Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
+    }
+
+    private void themeDialog() {
+        int mode = Prefs.get().getInt("theme_mode", 0);
+        new MaterialAlertDialogBuilder(this).setTitle("夜间模式")
+                .setSingleChoiceItems(new String[]{"跟随系统", "浅色", "深色"}, mode,
+                        (dialog, which) -> {
+                            dialog.dismiss();
                             Prefs.get().edit().putInt("theme_mode", which).apply();
                             AppCompatDelegate.setDefaultNightMode(which == 1
                                     ? AppCompatDelegate.MODE_NIGHT_NO
                                     : which == 2 ? AppCompatDelegate.MODE_NIGHT_YES
                                     : AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM);
                             recreate();
-                        }).show()));
-        add(Ui.item(this, "主题色 · 莫奈", Monet.summary(), this::monetDialog));
-        add(Ui.item(this, "主页皮肤", skinSummary(), this::openSkins));
-        add(Ui.item(this, "工具栏布局", toolbarSummary(), this::toolbarDialog));
-        add(switchRow("网页深色", "对浅色网页自动压暗", Prefs.webDark(), value -> {
-            Prefs.setWebDark(value);
-            Toast.makeText(this, "重新加载页面后生效", Toast.LENGTH_SHORT).show();
-        }));
-        add(Ui.item(this, "网页字体大小", Prefs.fontZoom() + "%", this::zoomDialog));
-        add(switchRow("下拉刷新", "在页面顶部下拉重新加载",
-                Prefs.pullRefresh(), Prefs::setPullRefresh));
-        add(switchRow("边缘滑动", "从屏幕左右边缘滑动前进/后退",
-                Prefs.edgeGesture(), Prefs::setEdgeGesture));
+                        })
+                .setNegativeButton("取消", null)
+                .show();
+    }
 
-        section("浏览");
-        add(Ui.item(this, "浏览器标识", uaName(),
-                () -> new MaterialAlertDialogBuilder(this).setTitle("浏览器标识")
-                        .setItems(new String[]{"Android（默认）", "桌面版", "自定义"}, (d, which) -> {
+    private void adblockDialog() {
+        boolean enabled = Prefs.adblockEnabled();
+        new MaterialAlertDialogBuilder(this).setTitle("广告拦截")
+                .setMessage((enabled ? "已启用" : "已关闭") + " · 主机规则 "
+                        + AdBlock.ruleCount() + " 条 · 已拦截 "
+                        + AdBlock.blockedCount() + " 次")
+                .setPositiveButton("更新规则", (d, w) -> {
+                    toast("开始更新…");
+                    AdBlock.updateSubscription(this, Prefs.adblockSubscription(), (ok, message) ->
+                            runOnUiThread(() -> {
+                                toast(message);
+                                buildCategory("general");
+                            }));
+                })
+                .setNeutralButton(enabled ? "关闭" : "开启", (d, w) -> {
+                    Prefs.setAdblockEnabled(!enabled);
+                    AdBlock.init(this);
+                    buildCategory("general");
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private String orientationName() {
+        return Prefs.get().getString("screen_orientation", "跟随系统");
+    }
+
+    private void orientationDialog() {
+        String[] labels = {"跟随系统", "自动", "竖屏", "横屏"};
+        int checked = Arrays.asList(labels).indexOf(orientationName());
+        new MaterialAlertDialogBuilder(this).setTitle("屏幕方向")
+                .setSingleChoiceItems(labels, Math.max(checked, 0), (dialog, which) -> {
+                    dialog.dismiss();
+                    Prefs.get().edit().putString("screen_orientation", labels[which]).apply();
+                    buildCategory("general");
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void backupDialog() {
+        new MaterialAlertDialogBuilder(this).setTitle("导入/备份书签")
+                .setItems(new String[]{"导入书签", "导出书签", "导出历史"}, (d, which) -> {
+                    if (which == 0) {
+                        importBookmarks();
+                    } else if (which == 1) {
+                        exportBookmarks();
+                    } else {
+                        exportHistory();
+                    }
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void clearData() {
+        new MaterialAlertDialogBuilder(this)
+                .setTitle("清除数据")
+                .setMessage("清除缓存、Cookie 与表单数据？书签、历史和密码不受影响。")
+                .setPositiveButton("清除", (d, w) -> {
+                    try {
+                        CookieManager.getInstance().removeAllCookies(null);
+                        CookieManager.getInstance().flush();
+                        WebView probe = new WebView(this);
+                        probe.clearCache(true);
+                        probe.clearFormData();
+                        probe.clearHistory();
+                        probe.destroy();
+                        toast("已清除");
+                    } catch (Throwable t) {
+                        toast("清除失败");
+                    }
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void feedback() {
+        try {
+            startActivity(new Intent(Intent.ACTION_VIEW,
+                    Uri.parse("https://github.com/zejiahuang/H-browser/issues/new")));
+        } catch (Throwable t) {
+            toast("没有可用的浏览器");
+        }
+    }
+
+    private void uaDialog() {
+        new MaterialAlertDialogBuilder(this).setTitle("浏览器标识")
+                .setSingleChoiceItems(new String[]{"Android（默认）", "桌面版", "自定义"},
+                        Prefs.uaMode(), (dialog, which) -> {
+                            dialog.dismiss();
                             Prefs.setUaMode(which);
                             if (which == 2) {
                                 inputDialog("自定义 UA", Prefs.customUa(), value -> {
                                     Prefs.setCustomUa(value);
                                     toastRefresh();
                                 });
+                            } else {
+                                toastRefresh();
                             }
-                        }).show()));
-        add(switchRow("默认无痕", "新标签不记录历史",
-                Prefs.incognitoDefault(), Prefs::setIncognitoDefault));
-
-        section("广告拦截");
-        add(switchRow("启用拦截", AdBlock.ruleCount() + " 条规则",
-                Prefs.adblockEnabled(), value -> {
-                    Prefs.setAdblockEnabled(value);
-                    AdBlock.init(this);
-                }));
-        add(Ui.item(this, "订阅地址", Prefs.adblockSubscription(),
-                () -> inputDialog("订阅地址", Prefs.adblockSubscription(), Prefs::setAdblockSubscription)));
-        add(Ui.item(this, "更新规则", "下载并替换本地规则", () -> {
-            Toast.makeText(this, "开始更新…", Toast.LENGTH_SHORT).show();
-            AdBlock.updateSubscription(this, Prefs.adblockSubscription(), (ok, message) ->
-                    runOnUiThread(() -> {
-                        Toast.makeText(this, message, Toast.LENGTH_LONG).show();
-                        build();
-                    }));
-        }));
-
-        section("用户脚本");
-        add(Ui.item(this, "管理脚本", UserScripts.list().size() + " 个已安装", this::manageScripts));
-
-        section("增强能力");
-        add(Ui.item(this, "AI 接口", aiSummary(), this::aiDialog));
-        add(Ui.item(this, "AI 对话", "打开助手", () ->
-                startActivity(new Intent(this, AiChatActivity.class))));
-        add(Ui.item(this, "翻译接口", Prefs.transUrl().isEmpty() ? "未配置" : Prefs.transUrl(),
-                this::transDialog));
-        add(Ui.item(this, "朗读语速", Prefs.ttsSpeed() + "x",
-                () -> new MaterialAlertDialogBuilder(this).setTitle("朗读语速")
-                        .setItems(new String[]{"0.8x", "1.0x", "1.3x", "1.6x"}, (d, which) -> {
-                            Prefs.setTtsSpeed(new float[]{0.8f, 1.0f, 1.3f, 1.6f}[which]);
-                            build();
-                        }).show()));
-        add(Ui.item(this, "媒体嗅探", "查看拦截到的音视频", () ->
-                startActivity(new Intent(this, MediaListActivity.class))));
-        add(Ui.item(this, "下载管理", "系统下载任务", () ->
-                startActivity(new Intent(this, DownloadActivity.class))));
-
-        section("隐私与同步");
-        add(Ui.item(this, "密码库", "本地加密保存账号", () ->
-                startActivity(new Intent(this, VaultActivity.class))));
-        add(Ui.item(this, "WebDAV 同步", Prefs.davUrl().isEmpty() ? "未配置" : Prefs.davUrl(),
-                () -> startActivity(new Intent(this, SyncActivity.class))));
-
-        section("数据与小组件");
-        add(Ui.item(this, "导出书签", "生成 Netscape HTML 书签文件", this::exportBookmarks));
-        add(Ui.item(this, "导入书签", "从 HTML 书签文件合并", this::importBookmarks));
-        add(Ui.item(this, "导出历史", "生成 HTML 历史记录", this::exportHistory));
-        add(Ui.item(this, "桌面小组件", "搜索 / 透明搜索 · 长按桌面添加", () ->
-                new MaterialAlertDialogBuilder(this).setTitle("桌面小组件")
-                        .setMessage("长按桌面空白处 → 小组件 → 氢。\n\n"
-                                + "提供「搜索」与「搜索（透明）」两种，点击直接开始输入。")
-                        .setPositiveButton("知道了", null).show()));
-
-        section("关于");
-        add(Ui.item(this, "氢 (H browser)", "版本 " + version(), () ->
-                new MaterialAlertDialogBuilder(this).setTitle("氢 (H browser)")
-                        .setMessage("轻量 Material 3 Expressive 浏览器\n"
-                                + "基于系统 WebView，无遥测、无内置账号服务。\n"
-                                + "广告规则来自 EasyList（CC BY-SA 3.0）。\n"
-                                + "许可证：Apache-2.0")
-                        .setPositiveButton("好", null)
-                        .show()));
-        add(Ui.item(this, "开源许可", "Apache-2.0 / EasyList CC BY-SA", () ->
-                new MaterialAlertDialogBuilder(this).setTitle("开源许可")
-                        .setMessage("本应用源代码采用 Apache License 2.0。\n\n"
-                                + "广告拦截种子规则参考 EasyList 格式，"
-                                + "EasyList 由社区维护，采用 CC BY-SA 3.0 许可。")
-                        .setPositiveButton("好", null)
-                        .show()));
-    }
-
-    private void section(String label) {
-        content.addView(Ui.section(this, label));
-        card = Ui.card(this);
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        params.setMargins(Ui.dp(this, 12), 0, Ui.dp(this, 12), 0);
-        content.addView(card, params);
-    }
-
-    private void add(android.view.View row) {
-        if (card == null) {
-            section("通用");
-        }
-        if (card.getChildCount() > 0) {
-            android.view.View divider = new android.view.View(this);
-            divider.setBackgroundColor((Ui.color(this, R.color.outline_variant) & 0x00FFFFFF)
-                    | 0x33000000);
-            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, 1);
-            params.setMargins(Ui.dp(this, 18), 0, 0, 0);
-            card.addView(divider, params);
-        }
-        card.addView(row, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+                            buildCategory("general");
+                        })
+                .setNegativeButton("取消", null)
+                .show();
     }
 
     private void toastRefresh() {
@@ -232,7 +839,7 @@ public class SettingsActivity extends AppCompatActivity {
 
     private String uaName() {
         int mode = Prefs.uaMode();
-        return mode == 1 ? "桌面版" : mode == 2 ? "自定义" : "Android（默认）";
+        return mode == 1 ? "桌面版" : mode == 2 ? "自定义" : "默认";
     }
 
     private String aiSummary() {
@@ -246,28 +853,6 @@ public class SettingsActivity extends AppCompatActivity {
         } catch (Throwable t) {
             return "0.2.0";
         }
-    }
-
-    private LinearLayout switchRow(String title, String summary, boolean checked,
-                                   final BooleanSaver saver) {
-        LinearLayout row = Ui.row(this);
-        row.setBackground(Ui.ripple(this));
-        row.setPadding(Ui.dp(this, 18), Ui.dp(this, 13), Ui.dp(this, 16), Ui.dp(this, 13));
-        row.setMinimumHeight(Ui.dp(this, 58));
-        LinearLayout texts = Ui.column(this);
-        texts.addView(Ui.text(this, title, 15, R.color.on_surface));
-        texts.addView(Ui.text(this, summary, 13, R.color.on_surface_variant));
-        row.addView(texts, new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        MaterialSwitch toggle = new MaterialSwitch(this);
-        toggle.setChecked(checked);
-        toggle.setOnCheckedChangeListener((buttonView, value) -> saver.save(value));
-        row.addView(toggle);
-        return row;
-    }
-
-    private interface BooleanSaver {
-        void save(boolean value);
     }
 
     private void inputDialog(String title, String value, final Saver saver) {
@@ -284,7 +869,11 @@ public class SettingsActivity extends AppCompatActivity {
                 .setView(wrapper)
                 .setPositiveButton("保存", (d, w) -> {
                     saver.save(input.getText().toString().trim());
-                    build();
+                    if (cat == null) {
+                        buildMain();
+                    } else {
+                        buildCategory(cat);
+                    }
                 })
                 .setNegativeButton("取消", null)
                 .show();
@@ -305,12 +894,12 @@ public class SettingsActivity extends AppCompatActivity {
         wrapper.addView(key);
         wrapper.addView(model);
         new MaterialAlertDialogBuilder(this)
-                .setTitle("AI 接口（OpenAI 兼容）")
+                .setTitle("AI 设置（OpenAI 兼容）")
                 .setView(wrapper)
                 .setPositiveButton("保存", (d, w) -> {
                     Prefs.setAi(base.getText().toString().trim(), key.getText().toString().trim(),
                             model.getText().toString().trim());
-                    build();
+                    buildCategory("general");
                 })
                 .setNegativeButton("取消", null)
                 .show();
@@ -336,7 +925,7 @@ public class SettingsActivity extends AppCompatActivity {
                 .setPositiveButton("保存", (d, w) -> {
                     Prefs.setTrans(url.getText().toString().trim(), key.getText().toString().trim(),
                             target.getText().toString().trim());
-                    build();
+                    buildCategory("advanced");
                 })
                 .setNegativeButton("取消", null)
                 .show();
@@ -356,7 +945,7 @@ public class SettingsActivity extends AppCompatActivity {
                         importFromClipboard();
                     } else {
                         UserScripts.delete(scripts.get(which - 1).id);
-                        build();
+                        buildCategory("scripts");
                     }
                 })
                 .setNegativeButton("关闭", null)
@@ -367,76 +956,56 @@ public class SettingsActivity extends AppCompatActivity {
         ClipboardManager manager = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
         if (manager == null || manager.getPrimaryClip() == null
                 || manager.getPrimaryClip().getItemCount() == 0) {
-            Toast.makeText(this, "剪贴板为空", Toast.LENGTH_SHORT).show();
+            toast("剪贴板为空");
             return;
         }
         CharSequence text = manager.getPrimaryClip().getItemAt(0).coerceToText(this);
         String source = text == null ? "" : text.toString();
         if (!source.contains("==UserScript==")) {
-            Toast.makeText(this, "不是有效的用户脚本", Toast.LENGTH_SHORT).show();
+            toast("不是有效的用户脚本");
             return;
         }
         try {
             UserScripts.Script script = UserScripts.install(this, source);
-            Toast.makeText(this, "已安装：" + script.name, Toast.LENGTH_SHORT).show();
-            build();
+            toast("已安装：" + script.name);
+            buildCategory("scripts");
         } catch (Throwable t) {
-            Toast.makeText(this, "安装失败", Toast.LENGTH_SHORT).show();
+            toast("安装失败");
         }
     }
 
-    private void monetDialog() {
-        final String[] labels = {"跟随壁纸", "跟随主页皮肤", "自定义颜色", "关闭（氢青经典）"};
-        new MaterialAlertDialogBuilder(this)
-                .setTitle("主题色 · 莫奈")
-                .setSingleChoiceItems(labels, Prefs.monetSource(), (dialog, which) -> {
+    private void buildExperimental() {
+        switchFlat("模糊效果", "为菜单、悬浮工具栏与页面顶部启用玻璃模糊",
+                Glass.enabled(), value -> {
+                    setPref("glass", value);
+                    recreate();
+                });
+        switchFlat("在设置中显示背景", "设置页以半透明玻璃浮在壁纸之上",
+                pref("settings_wallpaper"), value -> {
+                    setPref("settings_wallpaper", value);
+                    recreate();
+                });
+    }
+
+    private void choiceDialog(String title, final String[] labels, final int[] values,
+                              final String key, final int fallback) {
+        int current = Prefs.get().getInt(key, fallback);
+        int checked = 0;
+        for (int i = 0; i < values.length; i++) {
+            if (values[i] == current) checked = i;
+        }
+        new MaterialAlertDialogBuilder(this).setTitle(title)
+                .setSingleChoiceItems(labels, checked, (dialog, which) -> {
                     dialog.dismiss();
-                    if (which == Monet.SOURCE_CUSTOM) {
-                        customSeedDialog();
-                        return;
+                    Prefs.get().edit().putInt(key, values[which]).apply();
+                    if ("glass_material".equals(key) || "glass_style".equals(key)) {
+                        recreate();
+                    } else {
+                        buildCategory(cat == null ? "experimental" : cat);
                     }
-                    Prefs.setMonetSource(which);
-                    BaseSearchWidget.refresh(this);
-                    recreate();
                 })
                 .setNegativeButton("取消", null)
                 .show();
-    }
-
-    private void customSeedDialog() {
-        final EditText input = Ui.input(this, "#00B8C4");
-        input.setText(String.format("#%06X", Prefs.monetSeed() & 0xFFFFFF));
-        int pad = Ui.dp(this, 20);
-        LinearLayout wrapper = new LinearLayout(this);
-        wrapper.setPadding(pad, Ui.dp(this, 8), pad, 0);
-        wrapper.addView(input);
-        new MaterialAlertDialogBuilder(this)
-                .setTitle("自定义主题色")
-                .setView(wrapper)
-                .setPositiveButton("应用", (d, w) -> {
-                    int parsed;
-                    try {
-                        parsed = Color.parseColor(input.getText().toString().trim());
-                    } catch (Throwable t) {
-                        Toast.makeText(this, "颜色格式不正确，请用 #RRGGBB", Toast.LENGTH_SHORT).show();
-                        return;
-                    }
-                    Prefs.setMonetSeed(parsed | 0xFF000000);
-                    Prefs.setMonetSource(Monet.SOURCE_CUSTOM);
-                    BaseSearchWidget.refresh(this);
-                    recreate();
-                })
-                .setNegativeButton("取消", null)
-                .show();
-    }
-
-    private String skinSummary() {
-        SkinStore.Skin skin = SkinStore.active(this);
-        return skin == null ? "经典" : skin.name + " · " + skin.author;
-    }
-
-    private void openSkins() {
-        startActivity(new Intent(this, SkinActivity.class));
     }
 
     private String toolbarSummary() {
@@ -532,7 +1101,7 @@ public class SettingsActivity extends AppCompatActivity {
         render[0].run();
 
         new MaterialAlertDialogBuilder(this)
-                .setTitle("工具栏布局")
+                .setTitle("工具栏设置")
                 .setMessage("调整顺序，或隐藏不常用的按钮。")
                 .setView(scroll)
                 .setPositiveButton("保存", (d, w) -> {
@@ -542,7 +1111,7 @@ public class SettingsActivity extends AppCompatActivity {
                     }
                     if (!visible.contains("menu")) visible.add("menu");
                     Prefs.setToolbarItems(String.join(",", visible));
-                    build();
+                    buildCategory(cat == null ? "general" : cat);
                 })
                 .setNegativeButton("取消", null)
                 .show();
@@ -560,8 +1129,12 @@ public class SettingsActivity extends AppCompatActivity {
                 .setSingleChoiceItems(labels, checked, (dialog, which) -> {
                     Prefs.setFontZoom(values[which]);
                     dialog.dismiss();
-                    build();
-                    Toast.makeText(this, "重新加载页面后生效", Toast.LENGTH_SHORT).show();
+                    if (cat == null) {
+                        buildMain();
+                    } else {
+                        buildCategory(cat);
+                    }
+                    toast("重新加载页面后生效");
                 })
                 .setNegativeButton("取消", null)
                 .show();
@@ -576,7 +1149,7 @@ public class SettingsActivity extends AppCompatActivity {
         try {
             startActivityForResult(intent, REQ_IMPORT_BM);
         } catch (Throwable t) {
-            Toast.makeText(this, "无法打开文件选择器", Toast.LENGTH_SHORT).show();
+            toast("无法打开文件选择器");
         }
     }
 
@@ -596,7 +1169,7 @@ public class SettingsActivity extends AppCompatActivity {
         try {
             startActivityForResult(intent, request);
         } catch (Throwable t) {
-            Toast.makeText(this, "无法打开保存位置选择器", Toast.LENGTH_SHORT).show();
+            toast("无法打开保存位置选择器");
         }
     }
 
@@ -609,11 +1182,9 @@ public class SettingsActivity extends AppCompatActivity {
             new Thread(() -> {
                 try (InputStream in = getContentResolver().openInputStream(uri)) {
                     int count = Backup.importBookmarks(this, in);
-                    runOnUiThread(() -> Toast.makeText(this, "已导入 " + count + " 条书签",
-                            Toast.LENGTH_SHORT).show());
+                    runOnUiThread(() -> toast("已导入 " + count + " 条书签"));
                 } catch (Throwable t) {
-                    runOnUiThread(() -> Toast.makeText(this, "导入失败",
-                            Toast.LENGTH_SHORT).show());
+                    runOnUiThread(() -> toast("导入失败"));
                 }
             }).start();
         } else if (requestCode == REQ_EXPORT_BM || requestCode == REQ_EXPORT_HISTORY) {
@@ -625,13 +1196,45 @@ public class SettingsActivity extends AppCompatActivity {
                     } else {
                         Backup.exportBookmarks(this, out);
                     }
-                    runOnUiThread(() -> Toast.makeText(this, "已导出到所选位置",
-                            Toast.LENGTH_SHORT).show());
+                    runOnUiThread(() -> toast("已导出到所选位置"));
                 } catch (Throwable t) {
-                    runOnUiThread(() -> Toast.makeText(this, "导出失败",
-                            Toast.LENGTH_SHORT).show());
+                    runOnUiThread(() -> toast("导出失败"));
                 }
             }).start();
+        }
+    }
+
+    private static final class DotToggle extends View {
+        private boolean checked;
+
+        DotToggle(Context context, boolean checked) {
+            super(context);
+            this.checked = checked;
+            setContentDescription(checked ? "已开启" : "已关闭");
+            apply();
+        }
+
+        boolean isChecked() {
+            return checked;
+        }
+
+        void setChecked(boolean value) {
+            checked = value;
+            setContentDescription(value ? "已开启" : "已关闭");
+            apply();
+        }
+
+        private void apply() {
+            GradientDrawable bg = new GradientDrawable();
+            bg.setShape(GradientDrawable.OVAL);
+            if (checked) {
+                bg.setColor(Ui.color(getContext(), R.color.primary));
+            } else {
+                bg.setColor(Color.TRANSPARENT);
+                bg.setStroke(Math.max(2, (int) (1.5f * getResources()
+                        .getDisplayMetrics().density)), 0xFF3C3C3C);
+            }
+            setBackground(bg);
         }
     }
 }
