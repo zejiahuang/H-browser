@@ -4,6 +4,7 @@ import android.content.Context;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -163,6 +164,10 @@ public final class MenuDefs {
         list.setPadding(Ui.dp(context, 8), Ui.dp(context, 4), Ui.dp(context, 8), 0);
         ScrollView scroll = new ScrollView(context);
         scroll.addView(list);
+        int maxH = (int) (context.getResources().getDisplayMetrics().heightPixels * 0.5f);
+        FrameLayout holder = new FrameLayout(context);
+        holder.addView(scroll,
+                new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, maxH));
         final Runnable[] render = new Runnable[1];
         render[0] = () -> {
             list.removeAllViews();
@@ -208,7 +213,7 @@ public final class MenuDefs {
         new MaterialAlertDialogBuilder(context)
                 .setTitle("定制菜单")
                 .setMessage("上移/下移调整顺序，或隐藏不常用的项目；定制菜单始终显示。")
-                .setView(scroll)
+                .setView(holder)
                 .setPositiveButton("保存", (d, w) -> {
                     Prefs.get().edit()
                             .putString("menu_order", join(order))

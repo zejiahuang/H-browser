@@ -1901,6 +1901,10 @@ public class SettingsActivity extends AppCompatActivity {
         list.setPadding(Ui.dp(this, 8), Ui.dp(this, 4), Ui.dp(this, 8), 0);
         ScrollView scroll = new ScrollView(this);
         scroll.addView(list);
+        int maxH = (int) (getResources().getDisplayMetrics().heightPixels * 0.5f);
+        FrameLayout holder = new FrameLayout(this);
+        holder.addView(scroll,
+                new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, maxH));
         final Runnable[] render = new Runnable[1];
         render[0] = () -> {
             list.removeAllViews();
@@ -1953,7 +1957,7 @@ public class SettingsActivity extends AppCompatActivity {
         new MaterialAlertDialogBuilder(this)
                 .setTitle("工具栏设置")
                 .setMessage("调整顺序，或隐藏不常用的按钮。")
-                .setView(scroll)
+                .setView(holder)
                 .setPositiveButton("保存", (d, w) -> {
                     List<String> visible = new ArrayList<>();
                     for (String id : order) {
