@@ -1235,14 +1235,12 @@ public class BrowserActivity extends AppCompatActivity {
         }
         // R93 没有顶栏，顶部渐进模糊失去了依附对象；「渐进式模糊」改为
         // 控制底栏外溢的模糊阴影（见 syncBarShadow），这里只保留清理。
+        // 注意不要在每次 updateAddress 时重建快照：快照期底栏会被隐藏取样，
+        // 频繁刷新会让底栏在每次页面切换时闪一下。
         if (progressiveBlur.getVisibility() != View.GONE) {
             progressiveBlur.setVisibility(View.GONE);
         }
         progressiveBlur.detach();
-        if (bottomBarGlass != null && bottomBar != null
-                && bottomBar.getVisibility() == View.VISIBLE) {
-            bottomBarGlass.refresh();
-        }
     }
 
     private void buildToolbar() {
@@ -1831,12 +1829,9 @@ public class BrowserActivity extends AppCompatActivity {
         if (web.getParent() == null) {
             return;
         }
-        web.setVisibility(View.INVISIBLE);
-        web.post(() -> {
-            web.invalidate();
-            web.postInvalidateOnAnimation();
-            web.setVisibility(View.VISIBLE);
-        });
+        // 不再用 INVISIBLE/VISIBLE 强制重绘：整块页面会瞬间消失，造成闪屏。
+        web.invalidate();
+        web.postInvalidateOnAnimation();
     }
 
     @Override
