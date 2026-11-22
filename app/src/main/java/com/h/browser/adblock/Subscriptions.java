@@ -643,7 +643,7 @@ public final class Subscriptions {
     public static String summary(Context context) {
         List<Sub> subs = list(context);
         StringBuilder sb = new StringBuilder();
-        sb.append("内置基础规则（只读）\n");
+        sb.append("订阅规则\n");
         int enabled = 0;
         for (Sub sub : subs) {
             if (sub.enabled) enabled++;
