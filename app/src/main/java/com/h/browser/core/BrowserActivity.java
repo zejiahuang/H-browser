@@ -310,9 +310,16 @@ public class BrowserActivity extends AppCompatActivity {
         address.setOnEditorActionListener((v, actionId, event) -> {
             if (actionId == EditorInfo.IME_ACTION_GO || actionId == EditorInfo.IME_ACTION_SEND
                     || (event != null && event.getKeyCode() == android.view.KeyEvent.KEYCODE_ENTER)) {
-                search(address.getText().toString());
-                address.clearFocus();
-                hideKeyboard();
+                submitAddress();
+                return true;
+            }
+            return false;
+        });
+        // 硬件键盘的回车不走 IME action，会先触发焦点转移并清空输入，这里直接拦截
+        address.setOnKeyListener((v, keyCode, event) -> {
+            if (event != null && event.getAction() == android.view.KeyEvent.ACTION_DOWN
+                    && keyCode == android.view.KeyEvent.KEYCODE_ENTER) {
+                submitAddress();
                 return true;
             }
             return false;
@@ -1321,6 +1328,18 @@ public class BrowserActivity extends AppCompatActivity {
         if (tab != null && UrlUtils.isInternal(tab.url) && !isDataPage(tab.url)) {
             handleInternal(tab, tab.url);
         }
+    }
+
+    private void submitAddress() {
+        String query = address.getText().toString();
+        if (query.trim().isEmpty()) {
+            address.clearFocus();
+            hideKeyboard();
+            return;
+        }
+        search(query);
+        hideKeyboard();
+        address.clearFocus();
     }
 
     public void search(String query) {
