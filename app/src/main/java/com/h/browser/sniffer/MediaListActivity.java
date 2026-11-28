@@ -72,7 +72,7 @@ public class MediaListActivity extends AppCompatActivity {
             LinearLayout item = Ui.item(this, name, url, () -> play(url));
             final String label = name;
             item.setOnLongClickListener(v -> {
-                String[] actions = {"下载", "在浏览器播放", "复制链接"};
+                String[] actions = {"下载", "在浏览器播放", "播放（系统）", "复制链接"};
                 new com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
                         .setTitle(label)
                         .setItems(actions, (dialog, which) -> {
@@ -80,6 +80,8 @@ public class MediaListActivity extends AppCompatActivity {
                                 Downloader.enqueue(this, url, null, null, null);
                             } else if (which == 1) {
                                 play(url);
+                            } else if (which == 2) {
+                                playExternal(url);
                             } else {
                                 ClipboardManager manager = (ClipboardManager)
                                         getSystemService(Context.CLIPBOARD_SERVICE);
@@ -102,5 +104,43 @@ public class MediaListActivity extends AppCompatActivity {
         intent.putExtra("url", url);
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
         startActivity(intent);
+    }
+
+    private void playExternal(String url) {
+        Intent intent = new Intent(Intent.ACTION_VIEW);
+        intent.setDataAndType(android.net.Uri.parse(url), guessMime(url));
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        try {
+            startActivity(intent);
+        } catch (android.content.ActivityNotFoundException e) {
+            Toast.makeText(this, "没有可播放此格式的应用", Toast.LENGTH_SHORT).show();
+        } catch (Throwable t) {
+            Toast.makeText(this, "无法交给系统播放", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private static String guessMime(String url) {
+        String path = url == null ? "" : url.toLowerCase(java.util.Locale.US);
+        int question = path.indexOf('?');
+        if (question >= 0) {
+            path = path.substring(0, question);
+        }
+        if (path.endsWith(".m3u8")) return "application/x-mpegURL";
+        if (path.endsWith(".mpd")) return "application/dash+xml";
+        if (path.endsWith(".mp4") || path.endsWith(".m4v")) return "video/mp4";
+        if (path.endsWith(".webm")) return "video/webm";
+        if (path.endsWith(".mkv")) return "video/x-matroska";
+        if (path.endsWith(".ts")) return "video/mp2t";
+        if (path.endsWith(".mov")) return "video/quicktime";
+        if (path.endsWith(".avi")) return "video/x-msvideo";
+        if (path.endsWith(".flv")) return "video/x-flv";
+        if (path.endsWith(".mp3")) return "audio/mpeg";
+        if (path.endsWith(".m4a")) return "audio/mp4";
+        if (path.endsWith(".aac")) return "audio/aac";
+        if (path.endsWith(".ogg") || path.endsWith(".oga")) return "audio/ogg";
+        if (path.endsWith(".opus")) return "audio/opus";
+        if (path.endsWith(".flac")) return "audio/flac";
+        if (path.endsWith(".wav")) return "audio/wav";
+        return "video/*";
     }
 }

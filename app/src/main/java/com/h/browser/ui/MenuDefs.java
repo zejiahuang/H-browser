@@ -1,15 +1,13 @@
 package com.h.browser.ui;
 
+import android.app.Activity;
 import android.content.Context;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.FrameLayout;
 import android.widget.LinearLayout;
-import android.widget.ScrollView;
 import android.widget.TextView;
 
-import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 import com.h.browser.R;
 import com.h.browser.data.Prefs;
 
@@ -156,21 +154,27 @@ public final class MenuDefs {
         Prefs.get().edit().putStringSet("menu_hidden_ids", ids).apply();
     }
 
-    public static void showEditor(final Context context, final Runnable onSaved) {
+    public static void showEditor(final Activity activity, final Runnable onSaved) {
+        final Context context = activity;
         final List<String> order = order();
         final Set<String> hidden = hiddenIds();
 
-        final LinearLayout list = Ui.column(context);
-        list.setPadding(Ui.dp(context, 8), Ui.dp(context, 4), Ui.dp(context, 8), 0);
-        ScrollView scroll = new ScrollView(context);
-        scroll.addView(list);
-        int maxH = (int) (context.getResources().getDisplayMetrics().heightPixels * 0.5f);
-        FrameLayout holder = new FrameLayout(context);
-        holder.addView(scroll,
-                new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, maxH));
+        final GlassSheet sheet = new GlassSheet(activity).setBottomInset(0);
+        sheet.setPaneTitle("定制菜单");
+        final LinearLayout list = sheet.content();
+        final int edge = Ui.dp(context, 10);
+        list.setPadding(Ui.dp(context, 8), Ui.dp(context, 6), Ui.dp(context, 8), Ui.dp(context, 6));
         final Runnable[] render = new Runnable[1];
         render[0] = () -> {
             list.removeAllViews();
+            TextView title = Ui.text(context, "定制菜单", 18, R.color.on_surface);
+            title.setPadding(edge, edge, edge, Ui.dp(context, 2));
+            list.addView(title);
+            TextView note = Ui.text(context,
+                    "上移/下移调整顺序，或隐藏不常用的项目；定制菜单始终显示。", 13,
+                    R.color.on_surface_variant);
+            note.setPadding(edge, Ui.dp(context, 2), edge, Ui.dp(context, 8));
+            list.addView(note);
             for (int i = 0; i < order.size(); i++) {
                 final int index = i;
                 final String id = order.get(i);
@@ -207,24 +211,26 @@ public final class MenuDefs {
                 }));
                 list.addView(row);
             }
+            TextView save = Ui.text(context, "保存", 15, R.color.primary);
+            save.setGravity(Gravity.CENTER);
+            save.setMinHeight(Ui.dp(context, 48));
+            save.setPadding(edge, Ui.dp(context, 10), edge, Ui.dp(context, 10));
+            save.setBackground(Ui.ripple(context));
+            save.setOnClickListener(v -> {
+                Prefs.get().edit()
+                        .putString("menu_order", join(order))
+                        .putStringSet("menu_hidden_ids", hidden)
+                        .apply();
+                sheet.dismiss();
+                if (onSaved != null) {
+                    onSaved.run();
+                }
+            });
+            list.addView(save, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         };
         render[0].run();
-
-        new MaterialAlertDialogBuilder(context)
-                .setTitle("定制菜单")
-                .setMessage("上移/下移调整顺序，或隐藏不常用的项目；定制菜单始终显示。")
-                .setView(holder)
-                .setPositiveButton("保存", (d, w) -> {
-                    Prefs.get().edit()
-                            .putString("menu_order", join(order))
-                            .putStringSet("menu_hidden_ids", hidden)
-                            .apply();
-                    if (onSaved != null) {
-                        onSaved.run();
-                    }
-                })
-                .setNegativeButton("取消", null)
-                .show();
+        sheet.show();
     }
 
     private static String join(List<String> order) {

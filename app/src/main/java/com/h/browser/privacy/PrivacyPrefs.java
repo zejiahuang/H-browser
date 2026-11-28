@@ -145,9 +145,25 @@ public final class PrivacyPrefs {
                 && proxyPort() > 0;
     }
 
+    /** http 或 socks5；兼容把 socks5:// 直接写进主机栏的旧习惯。 */
+    public static String proxyType() {
+        String host = proxyHost().toLowerCase(java.util.Locale.US);
+        if (host.startsWith("socks5://") || host.startsWith("socks5h://")) {
+            return "socks5";
+        }
+        return "socks5".equals(Prefs.get().getString("proxy_type", "http"))
+                ? "socks5" : "http";
+    }
+
     public static void setProxy(boolean enabled, String host, int port, String user, String pass) {
+        setProxy(enabled, proxyType(), host, port, user, pass);
+    }
+
+    public static void setProxy(boolean enabled, String type, String host, int port,
+                                String user, String pass) {
         Prefs.get().edit()
                 .putBoolean("proxy_enabled", enabled)
+                .putString("proxy_type", "socks5".equals(type) ? "socks5" : "http")
                 .putString("proxy_host", host == null ? "" : host)
                 .putInt("proxy_port", Math.max(0, port))
                 .putString("proxy_user", user == null ? "" : user)

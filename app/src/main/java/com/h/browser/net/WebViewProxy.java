@@ -50,6 +50,7 @@ public final class WebViewProxy {
             return;
         }
         boolean enabled = PrivacyPrefs.proxyEnabled();
+        String type = PrivacyPrefs.proxyType();
         String host = normalize(PrivacyPrefs.proxyHost());
         int port = PrivacyPrefs.proxyPort();
         authHost = enabled ? host : "";
@@ -59,11 +60,13 @@ public final class WebViewProxy {
         lastError = null;
 
         if (!enabled) {
+            Socks5Relay.stop();
             clear();
             return;
         }
         if (host.isEmpty() || port <= 0 || port > 65535) {
             lastError = "代理主机或端口无效，已回到直连";
+            Socks5Relay.stop();
             clear();
             return;
         }
@@ -78,8 +81,24 @@ public final class WebViewProxy {
             lastError = "无法获取 WebView 代理控制器";
             return;
         }
-        String hostPart = host.contains(":") ? "[" + host + "]" : host;
-        String rule = "http://" + hostPart + ":" + port;
+        String rule;
+        if ("socks5".equals(type)) {
+            int local = Socks5Relay.start(type, host, port, authUser, authPass);
+            if (local <= 0) {
+                lastError = "SOCKS5 本地中转启动失败";
+                Socks5Relay.stop();
+                clear();
+                return;
+            }
+            rule = "http://127.0.0.1:" + local;
+            // 上游认证由本地中转完成，WebView 侧不参与挑战认证
+            authHost = "";
+            authEnabled = false;
+        } else {
+            Socks5Relay.stop();
+            String hostPart = host.contains(":") ? "[" + host + "]" : host;
+            rule = "http://" + hostPart + ":" + port;
+        }
         if (rule.equals(applied)) {
             return;
         }

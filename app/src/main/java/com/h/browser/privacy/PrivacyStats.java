@@ -7,16 +7,22 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.text.SimpleDateFormat;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.Date;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 public final class PrivacyStats {
 
     private static final String PREFS = "h_privacy_stats";
     private static final int MAX_EVENTS = 200;
     private static final long EVENT_TTL = 7L * 24 * 60 * 60 * 1000;
+    private static final Set<String> FP_KINDS = Collections.unmodifiableSet(
+            new HashSet<>(Arrays.asList("canvas", "webgl", "audio", "fonts")));
 
     private static SharedPreferences sp;
 
@@ -77,6 +83,9 @@ public final class PrivacyStats {
     }
 
     public static void recordFingerprint(String kind) {
+        if (kind == null || !FP_KINDS.contains(kind)) {
+            return;
+        }
         synchronized (PrivacyStats.class) {
             rollDay();
             if (sp == null) {

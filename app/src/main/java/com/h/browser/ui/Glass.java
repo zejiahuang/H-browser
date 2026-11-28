@@ -51,6 +51,16 @@ public final class Glass {
         return preset().label;
     }
 
+    /**
+     * 是否可用窗口快照玻璃。调试键 glass_force_legacy 可强制走回退面板，
+     * 用于在无低版本设备的模拟器上验收 API&lt;26 的外观。
+     */
+    public static boolean snapshotSupported() {
+        return Build.VERSION.SDK_INT >= 26 && enabled() && !solid()
+                && preset().capture
+                && !Prefs.get().getBoolean("glass_force_legacy", false);
+    }
+
     public static int radius() {
         return Prefs.get().getInt("glass_radius", 24);
     }
@@ -82,10 +92,6 @@ public final class Glass {
                     : old == 0 ? GlassPreset.FROST : GlassPreset.SOFT;
             Prefs.get().edit().putInt("glass_style", style).apply();
         }
-    }
-
-    public static int progressiveRadius() {
-        return Prefs.get().getInt("progressive_radius", 18);
     }
 
     public static boolean progressive() {
@@ -140,12 +146,22 @@ public final class Glass {
         return drawable;
     }
 
+    /** 快照不可用时的近不透明回退面板：不做假透明，避免文字与页面叠在一起。 */
+    public static GradientDrawable panelFallback(Context context, int radiusDp) {
+        GradientDrawable drawable = new GradientDrawable();
+        boolean night = night(context);
+        drawable.setColor(night ? 0xF21B2223 : 0xF2F2F7F7);
+        drawable.setCornerRadius(Ui.dp(context, radiusDp));
+        drawable.setStroke(Math.max(1, Ui.dp(context, 1)), night ? 0x1AFFFFFF : 0x22000000);
+        return drawable;
+    }
+
     /**
-     * API 31+ 使用系统背景模糊；更低版本保留半透明玻璃，不抛异常。
-     * 需要在 window 已可见（show 之后）调用。
+     * API 31+ 使用系统背景模糊；只在磨砂材质下启用（柔光/液态自带折射与快照，
+     * 叠加窗口模糊会糊掉折射边缘）。需要在 window 已可见（show 之后）调用。
      */
     public static void applyWindowBlur(Window window) {
-        if (window == null || !enabled()) {
+        if (window == null || !enabled() || !frosted()) {
             return;
         }
         int px = Ui.dp(window.getContext(), Math.max(1, radius()));

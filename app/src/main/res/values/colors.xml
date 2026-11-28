@@ -23,6 +23,7 @@
     <color name="surface_container">#EAF0F1</color>
     <color name="surface_container_high">#E4EAEB</color>
     <color name="inverse_surface">#2B3132</color>
+    <color name="dialog_panel">#E6F7FAFA</color>
     <color name="inverse_on_surface">#ECF2F2</color>
     <color name="scrim">#000000</color>
     <color name="ic_launcher_background">#00B8C4</color>

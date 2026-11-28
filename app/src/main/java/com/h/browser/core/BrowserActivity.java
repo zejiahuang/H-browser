@@ -21,7 +21,10 @@ import android.os.Bundle;
 import android.text.Editable;
 import android.text.TextWatcher;
 import android.util.TypedValue;
+import android.view.ActionMode;
 import android.view.Gravity;
+import android.view.Menu;
+import android.view.MenuItem;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewConfiguration;
@@ -67,7 +70,6 @@ import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
 import androidx.webkit.WebSettingsCompat;
 import androidx.webkit.WebViewFeature;
 
-import com.google.android.material.bottomsheet.BottomSheetDialog;
 import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 import com.google.android.material.snackbar.Snackbar;
 import com.h.browser.R;
@@ -101,12 +103,13 @@ import com.h.browser.ui.GlassDrawable;
 import com.h.browser.ui.GlassPreset;
 import com.h.browser.ui.GlassRenderer;
 import com.h.browser.ui.GlassShadowView;
+import com.h.browser.ui.GlassSheet;
 import com.h.browser.ui.HMarkView;
 import com.h.browser.ui.InternalPages;
 import com.h.browser.ui.MenuDefs;
 import com.h.browser.ui.NativeBridge;
-import com.h.browser.ui.ProgressiveBlurView;
 import com.h.browser.ui.SettingsActivity;
+import com.h.browser.ui.SheetGesture;
 import com.h.browser.userscript.CustomTheme;
 import com.h.browser.userscript.GmBridge;
 import com.h.browser.userscript.UserScripts;
@@ -141,7 +144,11 @@ public class BrowserActivity extends AppCompatActivity {
     private static final String LINK_JS = "(function(){if(window.__hLinkMenu)return;window.__hLinkMenu=1;"
             + "document.addEventListener('contextmenu',function(e){var t=e.target;"
             + "var a=t&&t.closest?t.closest('a'):null;var img=t&&t.closest?t.closest('img'):null;"
-            + "if(a||img){e.preventDefault();try{HNative.showLinkMenu(a?a.href:'',img?img.src:'');}catch(x){}}},true);})();";
+            + "if(!a&&!img)return;e.preventDefault();var s='';"
+            + "try{if(window.__hAdSel)s=window.__hAdSel(a||img);}catch(x){}"
+            + "try{HNative.showLinkMenu(a&&a.href?a.href:'',img&&img.src?img.src:'',s);}"
+            + "catch(x){}},true);})();";
+    private static String adPickJs;
     private static final String SCROLL_JS = "(function(){if(window.__hScrollHook)return;window.__hScrollHook=1;"
             + "var pend=0;function post(){if(pend)return;pend=1;requestAnimationFrame(function(){pend=0;"
             + "var y=0;try{y=window.pageYOffset||document.documentElement.scrollTop||0;}catch(e){}"
@@ -168,7 +175,6 @@ public class BrowserActivity extends AppCompatActivity {
     private android.app.Dialog menuDialog;
     private Boolean webDarkApplied;
     private View pageDim;
-    private ProgressiveBlurView progressiveBlur;
     private SwipeRefreshLayout refreshLayout;
     private AutoCompleteTextView address;
     private TextView titleView;
@@ -206,6 +212,7 @@ public class BrowserActivity extends AppCompatActivity {
     private boolean sslDialogShowing;
     private String privacySignature;
     private volatile boolean pickerActive;
+    private long lastLinkSheetAt;
 
     private final List<Tab> tabs = new ArrayList<>();
     private int current = -1;
@@ -240,6 +247,7 @@ public class BrowserActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
         applySystemBars();
+        setRequestedOrientation(Prefs.requestedOrientation());
         if (BuildConfig.DEBUG) {
             WebView.setWebContentsDebuggingEnabled(Prefs.get().getBoolean("debug_web", false));
         }
@@ -484,11 +492,6 @@ public class BrowserActivity extends AppCompatActivity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         webContainer.addView(refreshLayout, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-
-        progressiveBlur = new ProgressiveBlurView(this);
-        progressiveBlur.setVisibility(View.GONE);
-        webContainer.addView(progressiveBlur, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(108), Gravity.TOP));
 
         // 夜间模式与 R93 一致：网页整体压暗约 30%，主页/内部页不受影响
         pageDim = new View(this);
@@ -1189,7 +1192,6 @@ public class BrowserActivity extends AppCompatActivity {
             pageDim.setVisibility(dim ? View.VISIBLE : View.GONE);
         }
         homeOverlay.setVisibility(show ? View.VISIBLE : View.GONE);
-        updateProgressiveBlur();
     }
 
     private void loadHomeBackground(boolean exists) {
@@ -1230,20 +1232,6 @@ public class BrowserActivity extends AppCompatActivity {
         }, "home-bg-load").start();
     }
 
-    private void updateProgressiveBlur() {
-        if (progressiveBlur == null) {
-            return;
-        }
-        // R93 没有顶栏，顶部渐进模糊失去了依附对象；「渐进式模糊」改为
-        // 控制底栏外溢的模糊阴影（见 syncBarShadow），这里只保留清理。
-        // 注意不要在每次 updateAddress 时重建快照：快照期底栏会被隐藏取样，
-        // 频繁刷新会让底栏在每次页面切换时闪一下。
-        if (progressiveBlur.getVisibility() != View.GONE) {
-            progressiveBlur.setVisibility(View.GONE);
-        }
-        progressiveBlur.detach();
-    }
-
     private void buildToolbar() {
         if (toolbar == null) {
             return;
@@ -1253,9 +1241,17 @@ public class BrowserActivity extends AppCompatActivity {
         backButton = null;
         forwardButton = null;
         boolean menu = false;
+        int shown = 0;
         String[] items = Prefs.toolbarItems().split(",");
         for (String item : items) {
             String id = item.trim();
+            if (shown >= com.h.browser.ui.ToolbarDefs.MAX_VISIBLE) {
+                break;
+            }
+            if (!com.h.browser.ui.ToolbarDefs.valid(id)) {
+                continue;
+            }
+            shown++;
             switch (id) {
                 case "back":
                     backButton = toolButton(R.drawable.ic_back, "后退", v -> goBack());
@@ -1539,13 +1535,11 @@ public class BrowserActivity extends AppCompatActivity {
         WebView web = new ScrollWebView(this);
         web.addJavascriptInterface(new ScrollBridge(), "HScroll");
         ((ScrollWebView) web).setScrollListener(y -> {
-            if (progressiveBlur != null) {
-                progressiveBlur.onPageScroll();
-            }
             if (bottomBarGlass != null) {
                 bottomBarGlass.refreshAfterIdle();
             }
         });
+        ((ScrollWebView) web).setTextMenuProvider(this::wrapTextMenuCallback);
         WebSettings settings = web.getSettings();
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
@@ -1679,7 +1673,6 @@ public class BrowserActivity extends AppCompatActivity {
         updateUi();
         address.clearFocus();
         updateBottomBarLift();
-        updateProgressiveBlur();
     }
 
     private void closeTab(int index, boolean switchIfCurrent) {
@@ -2082,134 +2075,9 @@ public class BrowserActivity extends AppCompatActivity {
         }
     }
 
-    private static final class MenuGestureLayout extends FrameLayout {
-        interface Callback {
-            void onHorizontal(float dx);
-
-            void onPageSwipe(float dx);
-
-            void onDrag(float dy);
-
-            void onDragRelease(float dy, float velocityY);
-        }
-
-        private final int slop;
-        private float downX;
-        private float downY;
-        private boolean horizontal;
-        private boolean vertical;
-        private Callback callback;
-        private VelocityTracker tracker;
-
+    private static final class MenuGestureLayout extends SheetGesture {
         MenuGestureLayout(Context context) {
             super(context);
-            slop = ViewConfiguration.get(context).getScaledTouchSlop();
-            setClickable(true);
-        }
-
-        void setCallback(Callback callback) {
-            this.callback = callback;
-        }
-
-        @Override
-        public boolean onInterceptTouchEvent(MotionEvent ev) {
-            switch (ev.getActionMasked()) {
-                case MotionEvent.ACTION_DOWN:
-                    downX = ev.getX();
-                    downY = ev.getY();
-                    horizontal = false;
-                    vertical = false;
-                    recycleTracker();
-                    tracker = VelocityTracker.obtain();
-                    tracker.addMovement(ev);
-                    return false;
-                case MotionEvent.ACTION_MOVE:
-                    if (tracker != null) {
-                        tracker.addMovement(ev);
-                    }
-                    float dx = ev.getX() - downX;
-                    float dy = ev.getY() - downY;
-                    if (!horizontal && !vertical) {
-                        if (Math.abs(dx) > slop && Math.abs(dx) > Math.abs(dy) * 1.2f) {
-                            horizontal = true;
-                        } else if (dy > slop && dy > Math.abs(dx) * 1.2f) {
-                            vertical = true;
-                        }
-                    }
-                    return horizontal || vertical;
-                case MotionEvent.ACTION_UP:
-                case MotionEvent.ACTION_CANCEL:
-                    recycleTracker();
-                    return false;
-                default:
-                    return false;
-            }
-        }
-
-        @Override
-        public boolean onTouchEvent(MotionEvent ev) {
-            if (tracker != null) {
-                tracker.addMovement(ev);
-            }
-            switch (ev.getActionMasked()) {
-                case MotionEvent.ACTION_DOWN:
-                    downX = ev.getX();
-                    downY = ev.getY();
-                    horizontal = false;
-                    vertical = false;
-                    return true;
-                case MotionEvent.ACTION_MOVE: {
-                    float dx = ev.getX() - downX;
-                    float dy = ev.getY() - downY;
-                    if (!horizontal && !vertical) {
-                        if (Math.abs(dx) > slop && Math.abs(dx) > Math.abs(dy) * 1.2f) {
-                            horizontal = true;
-                        } else if (dy > slop && dy > Math.abs(dx) * 1.2f) {
-                            vertical = true;
-                        }
-                    }
-                    if (callback != null) {
-                        if (horizontal) {
-                            callback.onHorizontal(dx);
-                        } else if (vertical) {
-                            callback.onDrag(Math.max(0f, dy));
-                        }
-                    }
-                    return true;
-                }
-                case MotionEvent.ACTION_UP:
-                case MotionEvent.ACTION_CANCEL: {
-                    float dx = ev.getX() - downX;
-                    float dy = ev.getY() - downY;
-                    float velocityY = 0f;
-                    if (tracker != null) {
-                        tracker.computeCurrentVelocity(1000);
-                        velocityY = tracker.getYVelocity();
-                    }
-                    recycleTracker();
-                    if (callback != null) {
-                        if (horizontal) {
-                            callback.onPageSwipe(dx);
-                        } else if (vertical) {
-                            callback.onDragRelease(Math.max(0f, dy), velocityY);
-                        } else {
-                            performClick();
-                        }
-                    }
-                    horizontal = false;
-                    vertical = false;
-                    return true;
-                }
-                default:
-                    return true;
-            }
-        }
-
-        private void recycleTracker() {
-            if (tracker != null) {
-                tracker.recycle();
-                tracker = null;
-            }
         }
     }
 
@@ -2773,11 +2641,14 @@ public class BrowserActivity extends AppCompatActivity {
                     .replaceAll("-\\d{10,}$", "");
             labels[i] = name;
         }
-        new MaterialAlertDialogBuilder(this)
-                .setTitle("离线页面")
-                .setItems(labels, (d, which) -> openOffline(files[which]))
-                .setNegativeButton("关闭", null)
-                .show();
+        final GlassSheet sheet = newSheet();
+        LinearLayout list = listOf(sheet);
+        sheetTitle(list, "离线页面", null);
+        for (int i = 0; i < files.length; i++) {
+            final File file = files[i];
+            sheetRow(list, sheet, labels[i], color(R.color.on_surface), () -> openOffline(file));
+        }
+        sheet.show();
     }
 
     private void openOffline(File file) {
@@ -2880,7 +2751,7 @@ public class BrowserActivity extends AppCompatActivity {
         final String host = UrlUtils.host(url);
         final WebView web = tab.web;
         final boolean[] changed = {false};
-        final BottomSheetDialog dialog = newSheet();
+        final GlassSheet dialog = newSheet();
         LinearLayout list = listOf(dialog);
         sheetTitle(list, host, "网站设定 · 仅对当前网站生效");
         sheetToggle(list, R.drawable.ic_source, "JavaScript", "关闭后本页脚本不再执行",
@@ -3038,34 +2909,33 @@ public class BrowserActivity extends AppCompatActivity {
     }
 
     private void uaDialog() {
-        new MaterialAlertDialogBuilder(this).setTitle("浏览器标识")
-                .setSingleChoiceItems(new String[]{"Android（默认）", "桌面版", "自定义"},
-                        Prefs.uaMode(), (dialog, which) -> {
-                            dialog.dismiss();
-                            Prefs.setUaMode(which);
-                            if (which == 2) {
-                                final EditText input = new EditText(this);
-                                input.setText(Prefs.customUa());
-                                input.setSingleLine(false);
-                                int pad = dp(20);
-                                LinearLayout wrapper = new LinearLayout(this);
-                                wrapper.setPadding(pad, dp(8), pad, 0);
-                                wrapper.addView(input);
-                                new MaterialAlertDialogBuilder(this).setTitle("自定义 UA")
-                                        .setView(wrapper)
-                                        .setPositiveButton("保存", (d2, w2) -> {
-                                            Prefs.setCustomUa(input.getText().toString().trim());
-                                            applyUserAgent();
-                                            toast("已更新浏览器标识");
-                                        })
-                                        .setNegativeButton("取消", null).show();
-                            } else {
-                                applyUserAgent();
-                                toast("已更新浏览器标识");
-                            }
-                        })
-                .setNegativeButton("取消", null)
-                .show();
+        final GlassSheet sheet = newSheet();
+        LinearLayout list = listOf(sheet);
+        sheetChoice(list, sheet, "浏览器标识",
+                new String[]{"Android（默认）", "桌面版", "自定义"}, Prefs.uaMode(), which -> {
+                    Prefs.setUaMode(which);
+                    if (which == 2) {
+                        final EditText input = new EditText(this);
+                        input.setText(Prefs.customUa());
+                        input.setSingleLine(false);
+                        int pad = dp(20);
+                        LinearLayout wrapper = new LinearLayout(this);
+                        wrapper.setPadding(pad, dp(8), pad, 0);
+                        wrapper.addView(input);
+                        new MaterialAlertDialogBuilder(this).setTitle("自定义 UA")
+                                .setView(wrapper)
+                                .setPositiveButton("保存", (d2, w2) -> {
+                                    Prefs.setCustomUa(input.getText().toString().trim());
+                                    applyUserAgent();
+                                    toast("已更新浏览器标识");
+                                })
+                                .setNegativeButton("取消", null).show();
+                    } else {
+                        applyUserAgent();
+                        toast("已更新浏览器标识");
+                    }
+                });
+        sheet.show();
     }
 
     private void applyUserAgent() {
@@ -3096,7 +2966,7 @@ public class BrowserActivity extends AppCompatActivity {
             host = url;
         }
         String display = host == null || host.isEmpty() ? String.valueOf(url) : host;
-        final BottomSheetDialog dialog = newSheet();
+        final GlassSheet dialog = newSheet();
         LinearLayout list = listOf(dialog);
         sheetTitle(list, display, "网站信息");
         sheetNote(list, "连接" + (secure ? "安全（HTTPS）" : "不安全（HTTP）")
@@ -3128,19 +2998,25 @@ public class BrowserActivity extends AppCompatActivity {
                 sb.append("· ").append(recent.get(i)).append('\n');
             }
         }
-        new MaterialAlertDialogBuilder(this).setTitle("网络日志")
-                .setMessage(sb.toString().trim())
-                .setPositiveButton("查看全部", (d, w) -> openUrl("v://log", false))
-                .setNeutralButton("清空", (d, w) -> {
-                    AdBlock.clearLog();
-                    toast("已清空拦截日志");
-                })
-                .setNegativeButton("关闭", null)
-                .show();
+        final GlassSheet sheet = newSheet();
+        LinearLayout list = listOf(sheet);
+        sheetTitle(list, "网络日志", null);
+        sheetNote(list, sb.toString().trim());
+        sheetButtonRow(list, "查看全部", color(R.color.primary), () -> {
+            sheet.dismiss();
+            openUrl("v://log", false);
+        });
+        sheetButtonRow(list, "清空", color(R.color.on_surface), () -> {
+            sheet.dismiss();
+            AdBlock.clearLog();
+            toast("已清空拦截日志");
+        });
+        sheetButtonRow(list, "关闭", color(R.color.on_surface_variant), sheet::dismiss);
+        sheet.show();
     }
 
     private void showPrivacyReport() {
-        final BottomSheetDialog dialog = newSheet();
+        final GlassSheet dialog = newSheet();
         LinearLayout list = listOf(dialog);
         sheetTitle(list, "隐私报告",
                 "今日拦截 " + PrivacyStats.blockedToday()
@@ -3287,28 +3163,28 @@ public class BrowserActivity extends AppCompatActivity {
     }
 
     private void toolboxDialog() {
-        new MaterialAlertDialogBuilder(this).setTitle("工具箱")
-                .setItems(new String[]{"阅读模式", "朗读网页", "翻译选区", "资源嗅探",
-                        "下载管理", "扫描二维码", "密码库", "AI 助手"}, (d, which) -> {
-                    switch (which) {
-                        case 0: openReader(); break;
-                        case 1: readAloud(); break;
-                        case 2: translateSelection(); break;
-                        case 3: startActivity(new Intent(this, MediaListActivity.class)); break;
-                        case 4: openDownloads(); break;
-                        case 5: startScan(); break;
-                        case 6: fillPassword(); break;
-                        case 7: askAi(); break;
-                        default: break;
-                    }
-                })
-                .setNegativeButton("关闭", null)
-                .show();
+        final GlassSheet sheet = newSheet();
+        LinearLayout list = listOf(sheet);
+        sheetTitle(list, "工具箱", null);
+        String[] labels = {"阅读模式", "朗读网页", "翻译选区", "资源嗅探",
+                "下载管理", "扫描二维码", "密码库", "AI 助手"};
+        Runnable[] actions = {this::openReader, this::readAloud, this::translateSelection,
+                () -> startActivity(new Intent(this, MediaListActivity.class)),
+                this::openDownloads, this::startScan, this::fillPassword, this::askAi};
+        for (int i = 0; i < labels.length; i++) {
+            sheetRow(list, sheet, labels[i], color(R.color.on_surface), actions[i]);
+        }
+        sheet.show();
     }
 
     private void orientationDialog() {
-        new MaterialAlertDialogBuilder(this).setTitle("屏幕方向")
-                .setItems(new String[]{"跟随系统", "自动", "竖屏", "横屏"}, (d, which) -> {
+        int selected = Math.max(0,
+                java.util.Arrays.asList("跟随系统", "自动", "竖屏", "横屏")
+                        .indexOf(Prefs.orientationLabel()));
+        final GlassSheet sheet = newSheet();
+        LinearLayout list = listOf(sheet);
+        sheetChoice(list, sheet, "屏幕方向",
+                new String[]{"跟随系统", "自动", "竖屏", "横屏"}, selected, which -> {
                     int value;
                     switch (which) {
                         case 1:
@@ -3324,10 +3200,10 @@ public class BrowserActivity extends AppCompatActivity {
                             value = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED;
                             break;
                     }
+                    Prefs.setOrientation(value);
                     setRequestedOrientation(value);
-                })
-                .setNegativeButton("取消", null)
-                .show();
+                });
+        sheet.show();
     }
 
     private void toggleAdBlock() {
@@ -3341,6 +3217,23 @@ public class BrowserActivity extends AppCompatActivity {
         toast(enable ? "广告拦截已开启" : "广告拦截已关闭");
     }
 
+    private String adPickScript() {
+        if (adPickJs == null) {
+            try (java.io.InputStream in = getAssets().open("adpick.js")) {
+                java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+                byte[] buf = new byte[4096];
+                int n;
+                while ((n = in.read(buf)) > 0) {
+                    out.write(buf, 0, n);
+                }
+                adPickJs = out.toString("UTF-8");
+            } catch (Throwable t) {
+                adPickJs = "";
+            }
+        }
+        return adPickJs;
+    }
+
     private void markAd() {
         WebView web = currentWeb();
         if (web == null) {
@@ -3348,8 +3241,7 @@ public class BrowserActivity extends AppCompatActivity {
         }
         pickerActive = true;
         web.postDelayed(() -> pickerActive = false, 16000);
-        web.evaluateJavascript(
-                "(function(){if(window.__hAdPick)return;window.__hAdPick=1;"
+        web.evaluateJavascript(adPickScript() + "(function(){if(window.__hAdPick)return;window.__hAdPick=1;"
                         + "var bar=document.createElement('div');"
                         + "bar.textContent='点击要隐藏的广告元素，点此提示条退出';"
                         + "bar.style.cssText='position:fixed;left:12px;right:12px;"
@@ -3358,22 +3250,6 @@ public class BrowserActivity extends AppCompatActivity {
                         + "font:14px -apple-system,sans-serif;color:#fff;background:rgba(20,24,26,.92);"
                         + "box-shadow:0 6px 24px rgba(0,0,0,.35)';"
                         + "document.documentElement.appendChild(bar);"
-                        + "function escId(v){return String(v).replace(/([^a-zA-Z0-9_-])/g,'\\\\$1');}"
-                        + "function stable(c){return c&&c.length<40&&/^[a-zA-Z0-9_-]+$/.test(c);}"
-                        + "function sel(el){var parts=[],node=el,d=0;"
-                        + "while(node&&node.nodeType===1&&d<5){var s=node.tagName.toLowerCase();"
-                        + "if(node.id){var test='#'+escId(node.id);try{"
-                        + "if(document.querySelectorAll(test).length===1){parts.unshift(test);break;}}catch(x){}}"
-                        + "var cls=[];for(var i=0;i<node.classList.length&&cls.length<2;i++){"
-                        + "if(stable(node.classList[i]))cls.push(node.classList[i]);}"
-                        + "if(cls.length)s+='.'+cls.join('.');"
-                        + "var p=node.parentElement;if(p){var same=0,idx=0;"
-                        + "for(var j=0;j<p.children.length;j++){var c=p.children[j];"
-                        + "if(c.tagName===node.tagName){same++;if(c===node)idx=same;}}"
-                        + "if(same>1)s+=':nth-of-type('+idx+')';}"
-                        + "parts.unshift(s);var cand=parts.join(' > ');"
-                        + "try{if(document.querySelectorAll(cand).length<=3)return cand;}catch(x){}"
-                        + "node=p;d++;}return parts.join(' > ')||el.tagName.toLowerCase();}"
                         + "function done(){window.__hAdPick=0;"
                         + "if(bar.parentNode)bar.parentNode.removeChild(bar);"
                         + "document.removeEventListener('click',pick,true);}"
@@ -3381,7 +3257,7 @@ public class BrowserActivity extends AppCompatActivity {
                         + "if(e.target===bar||bar.contains(e.target)){e.preventDefault();"
                         + "e.stopPropagation();done();return;}"
                         + "e.preventDefault();e.stopPropagation();var el=e.target;"
-                        + "if(!el||el.nodeType!==1)return;var s=sel(el);"
+                        + "if(!el||el.nodeType!==1)return;var s=window.__hAdSel?window.__hAdSel(el):'';"
                         + "try{el.style.setProperty('display','none','important');}catch(x){}"
                         + "try{HNative.saveAdRule(location.hostname,s);}catch(x){}done();}"
                         + "document.addEventListener('click',pick,true);setTimeout(done,15000);})()",
@@ -3457,45 +3333,20 @@ public class BrowserActivity extends AppCompatActivity {
         toast(desktop ? "已切换电脑版" : "已切换移动版");
     }
 
-    private BottomSheetDialog newSheet() {
-        return new BottomSheetDialog(this);
+    private GlassSheet newSheet() {
+        View anchorBar = homeBar != null && homeBar.getVisibility() == View.VISIBLE
+                ? homeBar : bottomBar;
+        int barHeight = anchorBar == null || anchorBar.getHeight() <= 0
+                ? dp(56) : anchorBar.getHeight();
+        int barMargin = Glass.floatingToolbar() ? dp(Glass.toolbarMargin()) : 0;
+        return new GlassSheet(this).setBottomInset(barHeight + barMargin);
     }
 
-    private LinearLayout listOf(BottomSheetDialog dialog) {
-        ScrollView scroll = new ScrollView(this);
-        scroll.setClipToOutline(false);
-        LinearLayout list = new LinearLayout(this);
-        list.setOrientation(LinearLayout.VERTICAL);
-        list.setPadding(dp(8), dp(8), dp(8), dp(20));
-        if (Glass.enabled()) {
-            android.graphics.drawable.GradientDrawable bg = Glass.panel(this, 24);
-            if (!Glass.solid()) {
-                // sheet 内容密集，玻璃本体保持半透明会让背景文字与正文互相干扰，
-                // 这里用接近不透明的同色底，边框仍沿用玻璃描边。
-                int fill = Glass.night(this) ? 0xF2181F20 : 0xF2FCFDFD;
-                bg.setColors(new int[]{fill, fill});
-            }
-            bg.setCornerRadii(new float[]{
-                    dp(26), dp(26), dp(26), dp(26), 0, 0, 0, 0});
-            list.setBackground(bg);
-        }
-        scroll.addView(list);
-        dialog.setContentView(scroll);
-        dialog.setOnShowListener(d -> {
-            View sheetView = ((android.app.Dialog) d).findViewById(
-                    com.google.android.material.R.id.design_bottom_sheet);
-            if (sheetView != null) {
-                sheetView.setBackgroundColor(android.graphics.Color.TRANSPARENT);
-            }
-            if (dialog.getWindow() != null) {
-                dialog.getWindow().setDimAmount(Glass.enabled() ? 0.28f : 0f);
-                Glass.applyWindowBlur(dialog.getWindow());
-            }
-        });
-        return list;
+    private LinearLayout listOf(GlassSheet dialog) {
+        return dialog.content();
     }
 
-    private void item(LinearLayout parent, final android.app.Dialog dialog, int icon,
+    private void item(LinearLayout parent, final GlassSheet dialog, int icon,
                       String text, final Runnable action) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
@@ -3610,21 +3461,62 @@ public class BrowserActivity extends AppCompatActivity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
     }
 
-    private void showTabs() {
-        final android.app.Dialog dialog = new android.app.Dialog(this);
-        dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
-        LinearLayout sheet = new LinearLayout(this);
-        sheet.setOrientation(LinearLayout.VERTICAL);
-        GradientDrawable bg = new GradientDrawable();
-        bg.setColor(Glass.night(this) ? 0xFF1B2223 : 0xFFFFFFFF);
-        bg.setCornerRadius(dp(Glass.outerRadius()));
-        sheet.setBackground(bg);
-        if (Build.VERSION.SDK_INT >= 21) {
-            sheet.setClipToOutline(false);
-        }
+    private void sheetRow(LinearLayout list, final GlassSheet dialog, String text,
+                          int textColor, Runnable action) {
+        TextView row = new TextView(this);
+        row.setText(text);
+        row.setTextSize(16);
+        row.setTextColor(textColor);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setMinHeight(dp(52));
+        row.setPadding(dp(18), dp(12), dp(18), dp(12));
+        row.setBackground(selectableBackground());
+        row.setOnClickListener(v -> {
+            dialog.dismiss();
+            action.run();
+        });
+        list.addView(row, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+    }
 
-        LinearLayout list = new LinearLayout(this);
-        list.setOrientation(LinearLayout.VERTICAL);
+    private void sheetChoice(LinearLayout list, final GlassSheet dialog, String title,
+                             String[] options, int selected,
+                             java.util.function.IntConsumer change) {
+        sheetTitle(list, title, null);
+        for (int i = 0; i < options.length; i++) {
+            final int index = i;
+            LinearLayout row = new LinearLayout(this);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setMinimumHeight(dp(52));
+            row.setPadding(dp(18), dp(10), dp(18), dp(10));
+            row.setBackground(selectableBackground());
+            TextView label = new TextView(this);
+            label.setText(options[i]);
+            label.setTextSize(16);
+            label.setTextColor(color(index == selected ? R.color.primary : R.color.on_surface));
+            row.addView(label, new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            TextView check = new TextView(this);
+            check.setText("✓");
+            check.setTextSize(16);
+            check.setTextColor(color(R.color.primary));
+            check.setVisibility(index == selected ? View.VISIBLE : View.INVISIBLE);
+            row.addView(check);
+            row.setOnClickListener(v -> {
+                dialog.dismiss();
+                change.accept(index);
+            });
+            list.addView(row);
+        }
+    }
+
+    private void showTabs() {
+        if (barHidden) {
+            barHidden = false;
+            updateBottomBarLift();
+        }
+        final GlassSheet dialog = newSheet();
+        LinearLayout list = dialog.content();
         list.setPadding(dp(8), dp(10), dp(8), dp(8));
         TextView title = new TextView(this);
         title.setText("标签页 · " + tabs.size());
@@ -3665,100 +3557,7 @@ public class BrowserActivity extends AppCompatActivity {
             });
             list.addView(row);
         }
-        ScrollView scroll = new ScrollView(this);
-        scroll.setClipToOutline(false);
-        scroll.addView(list);
-        sheet.addView(scroll, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-
-        if (barHidden) {
-            barHidden = false;
-            updateBottomBarLift();
-        }
-        MenuGestureLayout floating = new MenuGestureLayout(this);
-        floating.setClipChildren(false);
-        floating.setClipToPadding(false);
-        View anchorBar = homeBar != null && homeBar.getVisibility() == View.VISIBLE
-                ? homeBar : bottomBar;
-        int barHeight = anchorBar == null || anchorBar.getHeight() <= 0
-                ? dp(56) : anchorBar.getHeight();
-        int barMargin = Glass.floatingToolbar() ? dp(Glass.toolbarMargin()) : 0;
-        floating.setPadding(dp(14), 0, dp(14), 0);
-        FrameLayout.LayoutParams sheetParams = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.BOTTOM);
-        sheetParams.bottomMargin = barHeight + barMargin + dp(15);
-        floating.addView(sheet, sheetParams);
-        final Runnable closeSheet = () -> {
-            if (!dialog.isShowing()) {
-                return;
-            }
-            float distance = Math.max(0f, sheet.getTranslationY()) + dp(70);
-            sheet.animate().translationY(distance).alpha(0f).setDuration(150)
-                    .withEndAction(dialog::dismiss).start();
-        };
-        floating.setOnClickListener(v -> closeSheet.run());
-        floating.setCallback(new MenuGestureLayout.Callback() {
-            @Override
-            public void onHorizontal(float dx) {
-            }
-
-            @Override
-            public void onPageSwipe(float dx) {
-            }
-
-            @Override
-            public void onDrag(float dy) {
-                sheet.setTranslationY(dy);
-                sheet.setAlpha(1f - Math.min(0.45f,
-                        dy / Math.max(1f, sheet.getHeight()) * 0.8f));
-            }
-
-            @Override
-            public void onDragRelease(float dy, float velocityY) {
-                if (dy > dp(88) || velocityY > 1100f) {
-                    closeSheet.run();
-                    return;
-                }
-                sheet.animate().translationY(0f).alpha(1f).setDuration(160).start();
-            }
-        });
-        if (Build.VERSION.SDK_INT >= 21) {
-            sheet.setElevation(dp(24));
-            sheet.setClipToOutline(false);
-        }
-        dialog.setContentView(floating);
-        // 窗口参数必须在 show() 之前设置，否则首帧会按默认居中小窗绘制，
-        // 出现先闪到一侧再跳到正确位置的跳变（与菜单弹层同因）。
-        android.view.Window w = dialog.getWindow();
-        if (w != null) {
-            w.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(
-                    android.graphics.Color.TRANSPARENT));
-            w.setLayout(ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT);
-            w.setDimAmount(0f);
-            w.clearFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND);
-            w.setGravity(Gravity.BOTTOM);
-            w.setWindowAnimations(0);
-            if (Glass.frosted()) {
-                Glass.applyWindowBlur(w);
-            }
-        }
-        floating.setAlpha(0f);
-        sheet.setTranslationY(dp(26));
-        dialog.setOnShowListener(d -> {
-            floating.animate().alpha(1f).setDuration(120).start();
-            sheet.animate().translationY(0f).setDuration(200).start();
-            sheet.post(() -> {
-                int maxH = (int) (getResources().getDisplayMetrics().heightPixels * 0.58f);
-                int extra = sheet.getHeight() - scroll.getHeight();
-                if (sheet.getHeight() > maxH && extra > 0 && extra < maxH) {
-                    ViewGroup.LayoutParams lp = scroll.getLayoutParams();
-                    lp.height = maxH - extra;
-                    scroll.setLayoutParams(lp);
-                }
-            });
-        });
+        dialog.setPaneTitle("标签页");
         dialog.show();
     }
 
@@ -3784,16 +3583,60 @@ public class BrowserActivity extends AppCompatActivity {
         if (link == null && image == null) {
             return false;
         }
-        showLinkSheet(link, image);
+        final String flink = link;
+        final String fimage = image;
+        Tab tab = currentTab();
+        String host = tab == null ? "" : UrlUtils.host(tab.url);
+        float scale = web.getScale();
+        if (!(scale > 0.05f)) {
+            scale = 1f;
+        }
+        final float x = web instanceof ScrollWebView ? ((ScrollWebView) web).getTouchX() / scale : -1f;
+        final float y = web instanceof ScrollWebView ? ((ScrollWebView) web).getTouchY() / scale : -1f;
+        if (host.isEmpty() || UrlUtils.isInternal(tab.url) || x < 0f) {
+            showLinkSheet(flink, fimage);
+            return true;
+        }
+        final String fhost = host;
+        String probe = "(function(){try{var t=" + JSONObject.quote(link == null ? "" : link)
+                + ",s=" + JSONObject.quote(image == null ? "" : image) + ",el=null;"
+                + "if(t){var as=document.querySelectorAll('a');for(var i=0;i<as.length;i++){"
+                + "if(as[i].href===t){el=as[i];break;}}}"
+                + "if(!el&&s){var im=document.querySelectorAll('img');for(var j=0;j<im.length;j++){"
+                + "if(im[j].src===s){el=im[j];break;}}}"
+                + (x >= 0f ? "if(!el){el=document.elementFromPoint(" + x + "," + y + ");}" : "")
+                + "return el&&window.__hAdSel?window.__hAdSel(el):'';"
+                + "}catch(e){return '';}})()";
+        web.evaluateJavascript(probe, value ->
+                showLinkSheet(flink, fimage, fhost, jsonUnquote(value)));
         return true;
     }
 
     public void showLinkSheet(final String link, final String image) {
+        showLinkSheet(link, image, null, null);
+    }
+
+    /** 页面内长按（contextmenu）回调：附带元素选择器，可一键标记为本页广告规则。 */
+    public void showLinkSheetFromPage(String link, String image, String selector) {
+        Tab tab = currentTab();
+        if (tab == null || tab.web == null || UrlUtils.isInternal(tab.url)) {
+            return;
+        }
+        showLinkSheet(link, image, UrlUtils.host(tab.url), selector);
+    }
+
+    private void showLinkSheet(final String link, final String image,
+                               final String adHost, final String selector) {
         if ((link == null || link.isEmpty()) && (image == null || image.isEmpty())) {
             return;
         }
+        long now = System.currentTimeMillis();
+        if (now - lastLinkSheetAt < 400) {
+            return;
+        }
+        lastLinkSheetAt = now;
         final String target = link != null && !link.isEmpty() ? link : image;
-        final BottomSheetDialog dialog = newSheet();
+        final GlassSheet dialog = newSheet();
         LinearLayout list = listOf(dialog);
         if (link != null && !link.isEmpty()) {
             item(list, dialog, R.drawable.ic_forward, "打开链接", () -> openUrl(link, false));
@@ -3815,7 +3658,108 @@ public class BrowserActivity extends AppCompatActivity {
             item(list, dialog, R.drawable.ic_download, "保存图片", () -> Downloader.enqueue(this, image,
                     null, null, null));
         }
+        if (adHost != null && !adHost.isEmpty() && selector != null
+                && !selector.isEmpty() && selector.length() <= 240) {
+            item(list, dialog, R.drawable.ic_block, "标记为广告（本站）", () -> {
+                final WebView web = currentWeb();
+                final String url = currentTab() == null ? null : currentTab().url;
+                new Thread(() -> {
+                    boolean ok = AdBlock.saveUserRule(this, adHost, selector);
+                    runOnUiThread(() -> {
+                        if (!ok) {
+                            toast("规则无效或已达 500 条上限");
+                            return;
+                        }
+                        toast("已添加本站规则");
+                        if (web != null && url != null) {
+                            web.evaluateJavascript(AdBlock.injectScript(url), null);
+                        }
+                    });
+                }, "adblock-link-rule").start();
+            });
+        }
         dialog.show();
+    }
+
+    private ActionMode.Callback wrapTextMenuCallback(final ActionMode.Callback inner) {
+        if (inner == null) {
+            return null;
+        }
+        return new ActionMode.Callback() {
+            @Override
+            public boolean onCreateActionMode(ActionMode mode, Menu menu) {
+                boolean ok = inner.onCreateActionMode(mode, menu);
+                if (!ok) {
+                    return false;
+                }
+                MenuItem search = menu.add(Menu.NONE, 9101, Menu.NONE, "搜索");
+                search.setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS);
+                MenuItem translate = menu.add(Menu.NONE, 9102, Menu.NONE, "翻译");
+                translate.setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS);
+                mode.setTitleOptionalHint(true);
+                return true;
+            }
+
+            @Override
+            public boolean onPrepareActionMode(ActionMode mode, Menu menu) {
+                return inner.onPrepareActionMode(mode, menu);
+            }
+
+            @Override
+            public boolean onActionItemClicked(ActionMode mode, MenuItem item) {
+                int id = item.getItemId();
+                if (id == 9101 || id == 9102) {
+                    final boolean search = id == 9101;
+                    WebView web = currentWeb();
+                    if (web == null) {
+                        return false;
+                    }
+                    web.evaluateJavascript("(function(){try{return String(window.getSelection()||'');}"
+                            + "catch(e){return '';}})()", value -> {
+                        String text = jsonUnquote(value).trim();
+                        if (text.isEmpty()) {
+                            mode.finish();
+                            return;
+                        }
+                        try {
+                            if (search) {
+                                openUrl(Prefs.searchEngine().replace("%s",
+                                        Uri.encode(text)), true);
+                            } else {
+                                openUrl("https://translate.google.com/?sl=auto&tl=zh-CN&text="
+                                        + Uri.encode(text), true);
+                            }
+                        } catch (Throwable t) {
+                            toast("无法打开页面");
+                        }
+                        mode.finish();
+                    });
+                    return true;
+                }
+                return inner.onActionItemClicked(mode, item);
+            }
+
+            @Override
+            public void onDestroyActionMode(ActionMode mode) {
+                inner.onDestroyActionMode(mode);
+            }
+        };
+    }
+
+    private static String jsonUnquote(String value) {
+        if (value == null) {
+            return "";
+        }
+        if (value.length() >= 2 && value.startsWith("\"")) {
+            try {
+                return new org.json.JSONArray("[" + value + "]").getString(0);
+            } catch (Throwable ignored) {
+            }
+        }
+        if ("null".equals(value)) {
+            return "";
+        }
+        return value;
     }
 
     private void showFindBar() {
@@ -3871,20 +3815,20 @@ public class BrowserActivity extends AppCompatActivity {
                 checked = i;
             }
         }
-        new MaterialAlertDialogBuilder(this)
-                .setTitle("网页缩放")
-                .setSingleChoiceItems(labels, checked, (dialog, which) -> {
-                    Prefs.setFontZoom(values[which]);
-                    for (Tab tab : tabs) {
-                        if (tab.web != null) {
-                            tab.web.getSettings().setTextZoom(values[which]);
-                        }
-                    }
-                    dialog.dismiss();
-                    toast("已应用 " + values[which] + "%");
-                })
-                .setNegativeButton("取消", null)
-                .show();
+        final GlassSheet sheet = newSheet();
+        LinearLayout list = listOf(sheet);
+        final int[] valuesRef = values;
+        final int selected = checked;
+        sheetChoice(list, sheet, "网页缩放", labels, selected, which -> {
+            Prefs.setFontZoom(valuesRef[which]);
+            for (Tab tab : tabs) {
+                if (tab.web != null) {
+                    tab.web.getSettings().setTextZoom(valuesRef[which]);
+                }
+            }
+            toast("已应用 " + valuesRef[which] + "%");
+        });
+        sheet.show();
     }
 
     private void copy(String text) {
@@ -4019,29 +3963,36 @@ public class BrowserActivity extends AppCompatActivity {
     private void translateDialog(final String text) {
         final String[] labels = {"中文", "English", "日本語"};
         final String[] codes = {"zh", "en", "ja"};
-        new MaterialAlertDialogBuilder(this)
-                .setTitle("翻译为")
-                .setItems(labels, (dialog, which) -> {
-                    toast("翻译中…");
-                    Translator.translate(this, text, codes[which], new Translator.Callback() {
-                        @Override
-                        public void onSuccess(final String result) {
-                            runOnUiThread(() -> new MaterialAlertDialogBuilder(BrowserActivity.this)
-                                    .setTitle("翻译结果")
-                                    .setMessage(result)
-                                    .setPositiveButton("复制", (d, w) -> copy(result))
-                                    .setNegativeButton("关闭", null)
-                                    .show());
-                        }
+        final GlassSheet sheet = newSheet();
+        LinearLayout list = listOf(sheet);
+        sheetChoice(list, sheet, "翻译为", labels, -1, which -> {
+            toast("翻译中…");
+            Translator.translate(this, text, codes[which], new Translator.Callback() {
+                @Override
+                public void onSuccess(final String result) {
+                    runOnUiThread(() -> showTranslateResult(result));
+                }
 
-                        @Override
-                        public void onError(final String message) {
-                            runOnUiThread(() -> toast(message));
-                        }
-                    });
-                })
-                .setNegativeButton("取消", null)
-                .show();
+                @Override
+                public void onError(final String message) {
+                    runOnUiThread(() -> toast(message));
+                }
+            });
+        });
+        sheet.show();
+    }
+
+    private void showTranslateResult(final String result) {
+        final GlassSheet sheet = newSheet();
+        LinearLayout list = listOf(sheet);
+        sheetTitle(list, "翻译结果", null);
+        sheetNote(list, result);
+        sheetButtonRow(list, "复制", color(R.color.primary), () -> {
+            sheet.dismiss();
+            copy(result);
+        });
+        sheetButtonRow(list, "关闭", color(R.color.on_surface_variant), sheet::dismiss);
+        sheet.show();
     }
 
     private void askAi() {
@@ -4279,6 +4230,12 @@ public class BrowserActivity extends AppCompatActivity {
     @Override
     protected void onPause() {
         super.onPause();
+        if (bottomBarGlass != null) {
+            bottomBarGlass.setWindowActive(false);
+        }
+        for (GlassDrawable g : homeBarGlass) {
+            g.setWindowActive(false);
+        }
         saveSession();
         WebView web = currentWeb();
         if (web != null) {
@@ -4374,6 +4331,18 @@ public class BrowserActivity extends AppCompatActivity {
     @Override
     protected void onResume() {
         super.onResume();
+        int wantedOrientation = Prefs.requestedOrientation();
+        if (getRequestedOrientation() != wantedOrientation) {
+            setRequestedOrientation(wantedOrientation);
+        }
+        if (bottomBarGlass != null) {
+            bottomBarGlass.setWindowActive(true);
+            bottomBarGlass.refresh();
+        }
+        for (GlassDrawable g : homeBarGlass) {
+            g.setWindowActive(true);
+            g.refresh();
+        }
         WebView web = currentWeb();
         if (web != null) {
             web.onResume();
@@ -4397,6 +4366,8 @@ public class BrowserActivity extends AppCompatActivity {
                 + (PrivacyPrefs.fingerprintMaster() ? "1" : "0")
                 + (PrivacyPrefs.fingerprint("canvas") ? "1" : "0")
                 + (PrivacyPrefs.fingerprint("webgl") ? "1" : "0")
+                + (PrivacyPrefs.fingerprint("audio") ? "1" : "0")
+                + (PrivacyPrefs.fingerprint("fonts") ? "1" : "0")
                 + PrivacyPrefs.fingerprintExemptions().toString();
         if (privacySignature == null) {
             privacySignature = signature;
@@ -4417,6 +4388,31 @@ public class BrowserActivity extends AppCompatActivity {
     protected void onDestroy() {
         boolean clearOnExit = !isChangingConfigurations()
                 && Prefs.get().getBoolean("clear_on_exit", false);
+        if (clearOnExit) {
+            for (Tab tab : tabs) {
+                if (tab.web == null) {
+                    continue;
+                }
+                try {
+                    tab.web.clearFormData();
+                    tab.web.clearHistory();
+                    tab.web.clearCache(true);
+                } catch (Throwable ignored) {
+                }
+            }
+            try {
+                CookieManager cm = CookieManager.getInstance();
+                cm.removeAllCookies(null);
+                cm.flush();
+                WebStorage.getInstance().deleteAllData();
+                WebViewDatabase db = WebViewDatabase.getInstance(this);
+                db.clearHttpAuthUsernamePassword();
+                db.clearUsernamePassword();
+                db.clearFormData();
+            } catch (Throwable ignored) {
+            }
+            MediaSniffer.clear();
+        }
         if (bottomBarGlass != null) {
             bottomBarGlass.release();
             bottomBarGlass = null;
@@ -4428,13 +4424,6 @@ public class BrowserActivity extends AppCompatActivity {
         }
         tabs.clear();
         super.onDestroy();
-        if (clearOnExit) {
-            CookieManager cm = CookieManager.getInstance();
-            cm.removeAllCookies(null);
-            cm.flush();
-            WebStorage.getInstance().deleteAllData();
-            WebViewDatabase.getInstance(this).clearHttpAuthUsernamePassword();
-        }
     }
 
     @Override
@@ -4601,9 +4590,6 @@ public class BrowserActivity extends AppCompatActivity {
                     barHidden = false;
                     updateBottomBarLift();
                 }
-                if (progressiveBlur != null) {
-                    progressiveBlur.onPageStarted();
-                }
             }
         }
 
@@ -4651,17 +4637,13 @@ public class BrowserActivity extends AppCompatActivity {
                 injectCosmetic(view, url);
                 UserScripts.inject(view, url);
                 CustomTheme.inject(view, url);
-                view.evaluateJavascript(LINK_JS, null);
+                view.evaluateJavascript(adPickScript() + "\n" + LINK_JS, null);
                 view.evaluateJavascript(SCROLL_JS, null);
             }
             if (tab == currentTab()) {
                 progress.setVisibility(View.GONE);
                 refreshLayout.setRefreshing(false);
                 updateUi();
-                updateProgressiveBlur();
-                if (progressiveBlur != null) {
-                    progressiveBlur.onPageFinished();
-                }
                 if (bottomBarGlass != null && bottomBar != null
                         && bottomBar.getVisibility() == View.VISIBLE) {
                     bottomBarGlass.refresh();
@@ -4706,7 +4688,7 @@ public class BrowserActivity extends AppCompatActivity {
             String shown = fingerprint.isEmpty() ? "无法读取"
                     : fingerprint.length() > 48 ? fingerprint.substring(0, 48) + "…" : fingerprint;
             final boolean[] answered = {false};
-            final BottomSheetDialog sheet = newSheet();
+            final GlassSheet sheet = newSheet();
             LinearLayout list = listOf(sheet);
             sheetTitle(list, "安全警告", host.isEmpty() ? "无法验证此网站的身份" : host);
             sheetNote(list, "问题：" + SslExceptionStore.errorName(error.getPrimaryError())
@@ -4870,7 +4852,7 @@ public class BrowserActivity extends AppCompatActivity {
                 return;
             }
             final boolean[] answered = {false};
-            final BottomSheetDialog sheet = newSheet();
+            final GlassSheet sheet = newSheet();
             LinearLayout list = listOf(sheet);
             sheetTitle(list, "位置权限", host + " 想要获取你的位置");
             sheetButtonRow(list, "仅本次", color(R.color.primary), () -> {
@@ -4977,7 +4959,7 @@ public class BrowserActivity extends AppCompatActivity {
             }
             String label = video && audio ? "相机和麦克风" : video ? "相机" : "麦克风";
             final boolean[] answered = {false};
-            final BottomSheetDialog sheet = newSheet();
+            final GlassSheet sheet = newSheet();
             LinearLayout list = listOf(sheet);
             sheetTitle(list, label + "权限", host + " 想要使用你的" + label);
             sheetButtonRow(list, "仅本次", color(R.color.primary), () -> {

@@ -24,6 +24,18 @@
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@color/surface</item>
         <item name="android:windowBackground">@color/surface</item>
+        <item name="materialAlertDialogTheme">@style/ThemeOverlay.HBrowser.GlassDialog</item>
+    </style>
+
+    <style name="ShapeAppearance.HBrowser.Dialog" parent="">
+        <item name="cornerFamily">rounded</item>
+        <item name="cornerSize">24dp</item>
+    </style>
+
+    <style name="ThemeOverlay.HBrowser.GlassDialog" parent="ThemeOverlay.Material3.MaterialAlertDialog">
+        <item name="colorSurface">@color/dialog_panel</item>
+        <item name="backgroundTint">@color/dialog_panel</item>
+        <item name="shapeAppearanceOverlay">@style/ShapeAppearance.HBrowser.Dialog</item>
     </style>
 
     <style name="Theme.HBrowser.Dialog" parent="Theme.Material3.DayNight.Dialog">

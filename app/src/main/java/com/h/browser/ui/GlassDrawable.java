@@ -58,7 +58,29 @@ public final class GlassDrawable extends Drawable {
     private final Paint shadowPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
     private Runnable onBuilt;
     private long lastAttempt;
-    private int attempts;
+    private int failStreak;
+    private boolean blocked;
+    private boolean windowActive = true;
+    private int lastW;
+    private int lastH;
+    private float lastRadiusDp = -1f;
+    private float lastCurve = -1f;
+    private static int sCaptures;
+    private static int sFailures;
+    private static int sBlocks;
+
+    /** 诊断计数（设置-实验面板读取）。 */
+    public static int captures() {
+        return sCaptures;
+    }
+
+    public static int failures() {
+        return sFailures;
+    }
+
+    public static int blocks() {
+        return sBlocks;
+    }
 
     public GlassDrawable(Window window, boolean shaderMode, float radiusDp, float curvePct) {
         this.window = window;
@@ -132,6 +154,8 @@ public final class GlassDrawable extends Drawable {
         if (!snapshot || released) {
             return;
         }
+        blocked = false;
+        failStreak = 0;
         handler.removeCallbacks(captureTask);
         handler.postDelayed(captureTask, 80);
     }
@@ -140,8 +164,21 @@ public final class GlassDrawable extends Drawable {
         if (!snapshot || released) {
             return;
         }
+        blocked = false;
+        failStreak = 0;
         handler.removeCallbacks(captureTask);
         handler.postDelayed(captureTask, 480);
+    }
+
+    /**
+     * 窗口是否处于前台。后台时取消待执行采样，避免白耗 PixelCopy；
+     * 恢复前台后等宿主下一次显式 refresh，而不是立刻抓一张过期画面。
+     */
+    public void setWindowActive(boolean active) {
+        this.windowActive = active;
+        if (!active) {
+            handler.removeCallbacks(captureTask);
+        }
     }
 
     public void release() {
@@ -166,21 +203,38 @@ public final class GlassDrawable extends Drawable {
 
     @Override
     protected void onBoundsChange(Rect bounds) {
+        int w = bounds.width();
+        int h = bounds.height();
+        boolean shapeChanged = Math.abs(w - lastW) >= 2 || Math.abs(h - lastH) >= 2
+                || Math.abs(radiusDp - lastRadiusDp) >= 0.5f
+                || Math.abs(curve - lastCurve) >= 0.01f;
         path = null;
-        if (!snapshot) {
-            if (drawShadow) {
-                rebuildShadow(bounds.width(), bounds.height());
+        if (!shapeChanged) {
+            // 地址栏/标题文字导致的 1px 抖动不再触发整块重采样，
+            // 阴影与轮廓沿用上一次尺寸即可。
+            if (!snapshot && drawShadow && shadowBitmap == null) {
+                rebuildShadow(w, h);
             }
             return;
         }
-        renderer.setShape(bounds.width(), bounds.height(), dp(radiusDp), curve);
+        lastW = w;
+        lastH = h;
+        lastRadiusDp = radiusDp;
+        lastCurve = curve;
+        if (!snapshot) {
+            if (drawShadow) {
+                rebuildShadow(w, h);
+            }
+            return;
+        }
+        renderer.setShape(w, h, dp(radiusDp), curve);
         renderer.setOptics(dp(preset.edgeDp), dp(preset.shiftDp), preset.saturation, preset.veil);
         renderer.setFinish(preset.chromatic, preset.gloss);
         renderer.setTint(night() ? 27 : 255, night() ? 34 : 255, night() ? 35 : 255,
                 night() ? nightAlpha : dayAlpha);
         renderer.setVeil(0f, 0f);
         if (drawShadow) {
-            rebuildShadow(bounds.width(), bounds.height());
+            rebuildShadow(w, h);
         }
         refresh();
     }
@@ -296,7 +350,7 @@ public final class GlassDrawable extends Drawable {
 
     /** 首次捕获常发生在 attach 之前；之后由 draw() 节流补捕。 */
     private void ensureCapture() {
-        if (!snapshot || capturing || released || blurred != null) {
+        if (!snapshot || capturing || released || blurred != null || blocked || !windowActive) {
             return;
         }
         long now = SystemClock.uptimeMillis();
@@ -309,16 +363,22 @@ public final class GlassDrawable extends Drawable {
     }
 
     private void capture() {
-        if (released || !snapshot || capturing || Build.VERSION.SDK_INT < 26
-                || window == null) {
+        if (released || !snapshot || capturing || !windowActive
+                || Build.VERSION.SDK_INT < 26 || window == null) {
             return;
         }
-        attempts++;
         lastAttempt = SystemClock.uptimeMillis();
         View host = host();
         if (host == null || !host.isShown() || host.getAlpha() < 1f
                 || host.getWidth() < 2 || host.getHeight() < 2) {
-            retryLater();
+            blockCapture();
+            return;
+        }
+        // 底栏下滑隐藏时 View 仍在布局中，isShown() 依旧为 true；
+        // 用全局可见矩形判断真正在屏区域，避免对屏幕外的宿主反复 PixelCopy。
+        Rect visible = new Rect();
+        if (!host.getGlobalVisibleRect(visible) || visible.isEmpty()) {
+            blockCapture();
             return;
         }
         int[] loc = new int[2];
@@ -340,15 +400,15 @@ public final class GlassDrawable extends Drawable {
         int rw = root.getWidth();
         int rh = root.getHeight();
         if (rw < 2 || rh < 2) {
-            retryLater();
+            blockCapture();
             return;
         }
         if (!src.intersect(0, 0, rw, rh)) {
-            retryLater();
+            blockCapture();
             return;
         }
         if (src.width() < 2 || src.height() < 2) {
-            retryLater();
+            blockCapture();
             return;
         }
         final int offX = loc[0] - src.left;
@@ -357,7 +417,7 @@ public final class GlassDrawable extends Drawable {
         try {
             raw = Bitmap.createBitmap(src.width(), src.height(), Bitmap.Config.ARGB_8888);
         } catch (Throwable t) {
-            retryLater();
+            blockCapture();
             return;
         }
         capturing = true;
@@ -450,11 +510,25 @@ public final class GlassDrawable extends Drawable {
     }
 
     private void retryLater() {
-        if (released || attempts >= 6 || blurred != null) {
+        if (released || blurred != null) {
             return;
         }
+        failStreak++;
+        sFailures++;
+        if (failStreak > 3) {
+            blockCapture();
+            return;
+        }
+        long delay = failStreak == 1 ? 400 : failStreak == 2 ? 900 : 1800;
         handler.removeCallbacks(captureTask);
-        handler.postDelayed(captureTask, 400);
+        handler.postDelayed(captureTask, delay);
+    }
+
+    /** 宿主不可见/未布局/快照区域无效：终态等待显式 refresh，不再空转重试。 */
+    private void blockCapture() {
+        blocked = true;
+        sBlocks++;
+        handler.removeCallbacks(captureTask);
     }
 
     private void restoreAlpha() {
@@ -495,6 +569,7 @@ public final class GlassDrawable extends Drawable {
             blurred.recycle();
         }
         blurred = out;
+        sCaptures++;
         if (useShader) {
             renderer.setBackdrop(out, offX, offY);
         }

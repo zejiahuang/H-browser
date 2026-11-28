@@ -109,11 +109,17 @@ public final class Prefs {
     }
 
     public static String toolbarItems() {
-        return sp.getString("toolbar_items", "back,forward,home,tabs,menu");
+        String raw = sp.getString("toolbar_items", "back,forward,home,tabs,menu");
+        String clean = com.h.browser.ui.ToolbarDefs.sanitize(raw);
+        if (!clean.equals(raw)) {
+            sp.edit().putString("toolbar_items", clean).apply();
+        }
+        return clean;
     }
 
     public static void setToolbarItems(String value) {
-        sp.edit().putString("toolbar_items", value).apply();
+        sp.edit().putString("toolbar_items",
+                com.h.browser.ui.ToolbarDefs.sanitize(value)).apply();
     }
 
     public static boolean homeLogo() {
@@ -168,6 +174,43 @@ public final class Prefs {
 
     public static boolean barAutoHide() {
         return sp.getBoolean("bar_autohide", true);
+    }
+
+    public static String orientationLabel() {
+        String label = sp.getString("screen_orientation", "跟随系统");
+        return label == null ? "跟随系统" : label;
+    }
+
+    public static int requestedOrientation() {
+        switch (orientationLabel()) {
+            case "自动":
+                return android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR;
+            case "竖屏":
+                return android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT;
+            case "横屏":
+                return android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE;
+            default:
+                return android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED;
+        }
+    }
+
+    public static void setOrientation(int value) {
+        String label;
+        switch (value) {
+            case android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR:
+                label = "自动";
+                break;
+            case android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT:
+                label = "竖屏";
+                break;
+            case android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE:
+                label = "横屏";
+                break;
+            default:
+                label = "跟随系统";
+                break;
+        }
+        sp.edit().putString("screen_orientation", label).apply();
     }
 
     public static boolean incognitoDefault() {

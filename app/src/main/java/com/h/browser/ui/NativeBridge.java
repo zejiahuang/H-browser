@@ -95,6 +95,11 @@ public class NativeBridge {
     }
 
     @JavascriptInterface
+    public void showLinkMenu(final String link, final String image, final String selector) {
+        activity.runOnUiThread(() -> activity.showLinkSheetFromPage(link, image, selector));
+    }
+
+    @JavascriptInterface
     public void setThemeMode(final int mode) {
         if (!trusted()) {
             return;

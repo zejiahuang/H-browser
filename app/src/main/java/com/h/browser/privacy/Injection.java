@@ -14,6 +14,8 @@ import java.util.Collections;
 import java.util.Map;
 import java.util.WeakHashMap;
 
+import com.h.browser.data.Prefs;
+
 public final class Injection {
 
     private static final Map<WebView, ScriptHandler> HANDLERS = new WeakHashMap<>();
@@ -62,7 +64,7 @@ public final class Injection {
         if (PrivacyPrefs.fingerprintMaster()) {
             String fp = read(context, "privacy/fingerprint.js");
             if (!fp.isEmpty()) {
-                sb.append("var __hp=").append(fingerprintConfig()).append(';');
+                sb.append("window.__hp=").append(fingerprintConfig()).append(';');
                 sb.append(fp);
                 any = true;
             }
@@ -80,10 +82,22 @@ public final class Injection {
             kinds.put("audio", PrivacyPrefs.fingerprint("audio"));
             kinds.put("fonts", PrivacyPrefs.fingerprint("fonts"));
             config.put("kinds", kinds);
+            config.put("salt", salt());
             config.put("exempt", new org.json.JSONArray(PrivacyPrefs.fingerprintExemptions()));
         } catch (Throwable ignored) {
         }
         return config.toString();
+    }
+
+    /** 每个安装一份稳定盐值：让指纹噪声可复现，但不同设备/安装之间不可比对。 */
+    private static String salt() {
+        android.content.SharedPreferences sp = Prefs.get();
+        String salt = sp.getString("fp_salt", "");
+        if (salt == null || salt.isEmpty()) {
+            salt = Long.toHexString(new java.util.Random().nextLong());
+            sp.edit().putString("fp_salt", salt).apply();
+        }
+        return salt;
     }
 
     private static String read(Context context, String path) {

@@ -40,6 +40,7 @@ import com.h.browser.adblock.Subscriptions;
 import com.h.browser.ai.AiChatActivity;
 import com.h.browser.core.BrowserActivity;
 import com.h.browser.data.Backup;
+import com.h.browser.data.BackupArchive;
 import com.h.browser.data.Prefs;
 import com.h.browser.download.DownloadActivity;
 import com.h.browser.sniffer.MediaListActivity;
@@ -70,6 +71,8 @@ public class SettingsActivity extends AppCompatActivity {
     private static final int REQ_EXPORT_HISTORY = 3003;
     private static final int REQ_IMPORT_RULES = 3004;
     private static final int REQ_HOME_BG = 3005;
+    private static final int REQ_EXPORT_ARCHIVE = 3006;
+    private static final int REQ_IMPORT_ARCHIVE = 3007;
 
     private static final String[][] CATEGORIES = {
             {"general", "通用", "搜索引擎 主页 浏览器标识 字体 下载 嗅探 书签 历史 小组件 无痕 语言 同步 AI 屏幕方向 操作设定"},
@@ -100,13 +103,10 @@ public class SettingsActivity extends AppCompatActivity {
         cat = getIntent().getStringExtra("cat");
         root = Ui.screen(this);
         if (pref("settings_wallpaper")) {
-            android.graphics.drawable.Drawable wallpaper = null;
-            try {
-                wallpaper = WallpaperManager.getInstance(this).getDrawable();
-            } catch (Throwable ignored) {
-            }
-            if (wallpaper != null) {
-                getWindow().setBackgroundDrawable(wallpaper);
+            Bitmap blurred = GlassPage.blurred(this);
+            if (blurred != null) {
+                getWindow().setBackgroundDrawable(
+                        new android.graphics.drawable.BitmapDrawable(getResources(), blurred));
             } else {
                 getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_SHOW_WALLPAPER);
                 getWindow().setBackgroundDrawable(
@@ -335,7 +335,7 @@ public class SettingsActivity extends AppCompatActivity {
                 () -> info("操作设定", "下拉刷新：" + (Prefs.pullRefresh() ? "开" : "关")
                         + "；边缘滑动：" + (Prefs.edgeGesture() ? "开" : "关")
                         + "。可在「定制」中调整。"));
-        flat("导入/备份书签", "HTML 书签文件", null, this::backupDialog);
+        flat("备份与恢复", "书签/历史/设置/脚本 · 可选口令", null, this::backupDialog);
     }
 
     private void buildPersonal() {
@@ -440,7 +440,7 @@ public class SettingsActivity extends AppCompatActivity {
         flat("模糊半径", Glass.radius() + "dp", null, () -> choiceDialog("模糊半径",
                 new String[]{"12dp", "18dp", "24dp", "32dp", "40dp"},
                 new int[]{12, 18, 24, 32, 40}, "glass_radius", 24));
-        switchFlat("渐进式模糊", "页面顶部随滚动渐隐",
+        switchFlat("底栏模糊垫层", "底栏外溢的柔和模糊过渡",
                 pref("progressive_blur", true),
                 value -> setPref("progressive_blur", value));
         switchFlat("沉浸悬浮工具栏", "底栏以玻璃面板悬浮在页面之上",
@@ -591,8 +591,14 @@ public class SettingsActivity extends AppCompatActivity {
             String err = com.h.browser.net.WebViewProxy.lastError();
             return err == null ? "未启用（HTTP/HTTPS）" : "未启用 · " + err;
         }
-        String summary = "已启用 · " + com.h.browser.privacy.PrivacyPrefs.proxyHost()
+        String type = com.h.browser.privacy.PrivacyPrefs.proxyType();
+        String summary = "已启用 · " + ("socks5".equals(type) ? "SOCKS5 · " : "HTTP · ")
+                + com.h.browser.privacy.PrivacyPrefs.proxyHost()
                 + ":" + com.h.browser.privacy.PrivacyPrefs.proxyPort();
+        int relay = com.h.browser.net.Socks5Relay.port();
+        if ("socks5".equals(type) && relay > 0) {
+            summary = summary + " · 中转 " + relay;
+        }
         String err = com.h.browser.net.WebViewProxy.lastError();
         return err == null ? summary : summary + " · " + err;
     }
@@ -677,12 +683,19 @@ public class SettingsActivity extends AppCompatActivity {
         pass.setInputType(InputType.TYPE_CLASS_TEXT
                 | InputType.TYPE_TEXT_VARIATION_PASSWORD);
         pass.setText(com.h.browser.privacy.PrivacyPrefs.proxyPass());
+        SwitchCompat socks5 = new SwitchCompat(this);
+        socks5.setText("类型：SOCKS5（关闭则为 HTTP 代理）");
+        socks5.setChecked("socks5".equals(com.h.browser.privacy.PrivacyPrefs.proxyType()));
         form.addView(host);
         form.addView(port);
+        form.addView(socks5);
         form.addView(user);
         form.addView(pass);
-        form.addView(Ui.text(this, "仅支持 HTTP/HTTPS 代理。认证只在挑战主机等于代理主机时提交；"
-                + "SOCKS5 认证中转将在后续版本提供。", 12, R.color.on_surface_variant));
+        int relayPort = com.h.browser.net.Socks5Relay.port();
+        String status = relayPort > 0 ? "中转运行中 · 127.0.0.1:" + relayPort : "中转未运行";
+        form.addView(Ui.text(this, "HTTP 代理：认证只在挑战主机等于代理主机时提交。"
+                + "SOCKS5：经本地 127.0.0.1 中转转发到上游，认证由中转完成。"
+                + "\n" + status, 12, R.color.on_surface_variant));
         new MaterialAlertDialogBuilder(this).setTitle("代理服务器")
                 .setView(form)
                 .setPositiveButton("保存并应用", (d, w) -> {
@@ -693,7 +706,8 @@ public class SettingsActivity extends AppCompatActivity {
                     } catch (Throwable ignored) {
                     }
                     boolean enabled = !h.isEmpty() && portValue > 0 && portValue <= 65535;
-                    com.h.browser.privacy.PrivacyPrefs.setProxy(enabled, h, portValue,
+                    com.h.browser.privacy.PrivacyPrefs.setProxy(enabled,
+                            socks5.isChecked() ? "socks5" : "http", h, portValue,
                             user.getText().toString().trim(), pass.getText().toString());
                     com.h.browser.net.WebViewProxy.apply();
                     String err = com.h.browser.net.WebViewProxy.lastError();
@@ -821,8 +835,13 @@ public class SettingsActivity extends AppCompatActivity {
                         + "EasyList 由社区维护，采用 CC BY-SA 3.0 许可。"));
     }
 
+    /** 定制页预览画布：模拟主页的三处固定色，与设计稿保持一致。 */
+    private static final int DESIGNER_CHROME_BG = 0xFF222222;
+    private static final int DESIGNER_SEARCH_STROKE = 0xFF343434;
+    private static final int DESIGNER_SEARCH_HINT = 0xFFDDDDDD;
+
     private void buildDesigner() {
-        root.setBackgroundColor(0xFF222222);
+        root.setBackgroundColor(DESIGNER_CHROME_BG);
         content.setPadding(0, 0, 0, 0);
         FrameLayout preview = new FrameLayout(this);
         int homeBg = Prefs.get().getInt("home_bg", 0);
@@ -865,11 +884,11 @@ public class SettingsActivity extends AppCompatActivity {
         searchPill.setVisibility(Prefs.homeSearch() ? View.VISIBLE : View.GONE);
         GradientDrawable outline = new GradientDrawable();
         outline.setColor(Color.TRANSPARENT);
-        outline.setStroke(Math.max(1, Ui.dp(this, 1)), 0xFF343434);
+        outline.setStroke(Math.max(1, Ui.dp(this, 1)), DESIGNER_SEARCH_STROKE);
         outline.setCornerRadius(Ui.dp(this, 23));
         searchPill.setBackground(outline);
         TextView pillHint = Ui.text(this, Prefs.homeSearchHint(), 13, R.color.on_surface_variant);
-        pillHint.setTextColor(0xFFDDDDDD);
+        pillHint.setTextColor(DESIGNER_SEARCH_HINT);
         searchPill.addView(pillHint);
         LinearLayout.LayoutParams pillParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(this, 46));
@@ -1644,29 +1663,171 @@ public class SettingsActivity extends AppCompatActivity {
     private void orientationDialog() {
         String[] labels = {"跟随系统", "自动", "竖屏", "横屏"};
         int checked = Arrays.asList(labels).indexOf(orientationName());
-        new MaterialAlertDialogBuilder(this).setTitle("屏幕方向")
-                .setSingleChoiceItems(labels, Math.max(checked, 0), (dialog, which) -> {
-                    dialog.dismiss();
-                    Prefs.get().edit().putString("screen_orientation", labels[which]).apply();
-                    buildCategory("general");
-                })
-                .setNegativeButton("取消", null)
-                .show();
+        sheetChoice("屏幕方向", labels, Math.max(checked, 0), which -> {
+            Prefs.get().edit().putString("screen_orientation", labels[which]).apply();
+            buildCategory("general");
+        });
     }
 
     private void backupDialog() {
-        new MaterialAlertDialogBuilder(this).setTitle("导入/备份书签")
-                .setItems(new String[]{"导入书签", "导出书签", "导出历史"}, (d, which) -> {
-                    if (which == 0) {
-                        importBookmarks();
-                    } else if (which == 1) {
-                        exportBookmarks();
-                    } else {
-                        exportHistory();
-                    }
-                })
-                .setNegativeButton("取消", null)
-                .show();
+        final GlassSheet sheet = new GlassSheet(this);
+        sheet.setPaneTitle("备份与恢复");
+        LinearLayout list = sheet.content();
+        int edge = Ui.dp(this, 18);
+        TextView head = Ui.text(this, "备份与恢复", 18, R.color.on_surface);
+        head.setPadding(edge, Ui.dp(this, 16), edge, Ui.dp(this, 8));
+        list.addView(head);
+        sheetAction(list, sheet, "导入 HTML 书签", this::importBookmarks);
+        sheetAction(list, sheet, "导出 HTML 书签", this::exportBookmarks);
+        sheetAction(list, sheet, "导出历史记录", this::exportHistory);
+        sheetAction(list, sheet, "导出完整备份（可选择分类和口令）", this::exportArchiveSheet);
+        sheetAction(list, sheet, "从完整备份恢复", this::importArchive);
+        sheet.show();
+    }
+
+    private void sheetAction(LinearLayout list, final GlassSheet sheet, String text,
+                             final Runnable action) {
+        TextView row = Ui.text(this, text, 16, R.color.on_surface);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setMinHeight(Ui.dp(this, 52));
+        row.setPadding(Ui.dp(this, 18), Ui.dp(this, 12), Ui.dp(this, 18), Ui.dp(this, 12));
+        row.setBackground(Ui.ripple(this));
+        row.setOnClickListener(v -> {
+            sheet.dismiss();
+            action.run();
+        });
+        list.addView(row, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+    }
+
+    private boolean[] archiveCategories = null;
+    private String archivePassword = "";
+    private String pendingRestoreText = null;
+
+    private void exportArchiveSheet() {
+        if (archiveCategories == null) {
+            archiveCategories = new boolean[BackupArchive.CATEGORY_KEYS.length];
+            for (int i = 0; i < archiveCategories.length; i++) {
+                archiveCategories[i] = true;
+            }
+        }
+        final boolean[] pick = archiveCategories.clone();
+        final GlassSheet sheet = new GlassSheet(this);
+        sheet.setPaneTitle("导出完整备份");
+        LinearLayout list = sheet.content();
+        final int edge = Ui.dp(this, 18);
+        TextView head = Ui.text(this, "选择要备份的内容", 18, R.color.on_surface);
+        head.setPadding(edge, Ui.dp(this, 16), edge, Ui.dp(this, 8));
+        list.addView(head);
+        final TextView[] labels = new TextView[pick.length];
+        for (int i = 0; i < pick.length; i++) {
+            final int index = i;
+            final String name = BackupArchive.CATEGORY_NAMES[i];
+            LinearLayout row = Ui.row(this);
+            row.setMinimumHeight(Ui.dp(this, 52));
+            row.setPadding(edge, Ui.dp(this, 8), edge, Ui.dp(this, 8));
+            row.setBackground(Ui.ripple(this));
+            TextView label = Ui.text(this, name, 16,
+                    pick[i] ? R.color.primary : R.color.on_surface);
+            row.addView(label, new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            TextView check = Ui.text(this, "✓", 16, R.color.primary);
+            check.setVisibility(pick[i] ? View.VISIBLE : View.INVISIBLE);
+            row.addView(check);
+            labels[i] = label;
+            View[] checkRef = {check};
+            row.setOnClickListener(v -> {
+                pick[index] = !pick[index];
+                labels[index].setTextColor(Ui.color(this,
+                        pick[index] ? R.color.primary : R.color.on_surface));
+                checkRef[0].setVisibility(pick[index] ? View.VISIBLE : View.INVISIBLE);
+            });
+            list.addView(row);
+        }
+        TextView next = Ui.text(this, "继续", 16, R.color.primary);
+        next.setGravity(Gravity.CENTER);
+        next.setMinHeight(Ui.dp(this, 52));
+        next.setPadding(edge, Ui.dp(this, 12), edge, Ui.dp(this, 12));
+        next.setBackground(Ui.ripple(this));
+        next.setOnClickListener(v -> {
+            sheet.dismiss();
+            int mask = 0;
+            for (int i = 0; i < pick.length; i++) {
+                if (pick[i]) {
+                    mask |= 1 << i;
+                }
+                archiveCategories[i] = pick[i];
+            }
+            if (mask == 0) {
+                toast("请至少选择一项");
+                return;
+            }
+            final int categories = mask;
+            inputDialog("备份口令（留空则不加密）", archivePassword, value -> {
+                archivePassword = value.trim();
+                exportArchive(categories);
+            });
+        });
+        list.addView(next, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        sheet.show();
+    }
+
+    private void exportArchive(int categories) {
+        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("application/octet-stream");
+        intent.putExtra(Intent.EXTRA_TITLE, "h-backup.hbk");
+        try {
+            startActivityForResult(intent, REQ_EXPORT_ARCHIVE);
+        } catch (Throwable t) {
+            toast("无法打开保存位置选择器");
+        }
+    }
+
+    private void importArchive() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("*/*");
+        intent.putExtra(Intent.EXTRA_MIME_TYPES,
+                new String[]{"application/octet-stream", "application/json", "text/plain"});
+        try {
+            startActivityForResult(intent, REQ_IMPORT_ARCHIVE);
+        } catch (Throwable t) {
+            toast("无法打开文件选择器");
+        }
+    }
+
+    private void runArchiveRestore(String text, String password) {
+        new Thread(() -> {
+            try {
+                if (BackupArchive.isEncrypted(text)
+                        && (password == null || password.isEmpty())) {
+                    runOnUiThread(() -> askRestorePassword(text));
+                    return;
+                }
+                BackupArchive.Summary summary = BackupArchive.importFrom(this,
+                        new java.io.ByteArrayInputStream(
+                                text.getBytes(java.nio.charset.StandardCharsets.UTF_8)),
+                        password);
+                runOnUiThread(() -> toast("恢复完成（" + summary.message() + "）"));
+            } catch (IllegalArgumentException e) {
+                final String message = e.getMessage() == null ? "恢复失败" : e.getMessage();
+                runOnUiThread(() -> toast(message));
+            } catch (Throwable t) {
+                runOnUiThread(() -> toast("恢复失败：文件无法解析"));
+            }
+        }).start();
+    }
+
+    private void askRestorePassword(final String text) {
+        inputDialog("该备份已加密，请输入口令", "", value -> {
+            if (value.isEmpty()) {
+                toast("未输入口令");
+                return;
+            }
+            runArchiveRestore(text, value.trim());
+        });
     }
 
     private void clearData() {
@@ -1906,6 +2067,36 @@ public class SettingsActivity extends AppCompatActivity {
                 });
     }
 
+    private void sheetChoice(String title, String[] labels, int checked,
+                             java.util.function.IntConsumer onPick) {
+        GlassSheet sheet = new GlassSheet(this);
+        sheet.setPaneTitle(title);
+        LinearLayout list = sheet.content();
+        int edge = Ui.dp(this, 18);
+        TextView head = Ui.text(this, title, 18, R.color.on_surface);
+        head.setPadding(edge, Ui.dp(this, 16), edge, Ui.dp(this, 8));
+        list.addView(head);
+        for (int i = 0; i < labels.length; i++) {
+            final int index = i;
+            LinearLayout row = Ui.row(this);
+            row.setMinimumHeight(Ui.dp(this, 52));
+            row.setPadding(edge, Ui.dp(this, 10), edge, Ui.dp(this, 10));
+            row.setBackground(Ui.ripple(this));
+            row.addView(Ui.text(this, labels[i], 16,
+                    index == checked ? R.color.primary : R.color.on_surface),
+                    new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            if (index == checked) {
+                row.addView(Ui.text(this, "✓", 16, R.color.primary));
+            }
+            row.setOnClickListener(v -> {
+                sheet.dismiss();
+                onPick.accept(index);
+            });
+            list.addView(row);
+        }
+        sheet.show();
+    }
+
     private void choiceDialog(String title, final String[] labels, final int[] values,
                               final String key, final int fallback) {
         int current = Prefs.get().getInt(key, fallback);
@@ -1913,18 +2104,14 @@ public class SettingsActivity extends AppCompatActivity {
         for (int i = 0; i < values.length; i++) {
             if (values[i] == current) checked = i;
         }
-        new MaterialAlertDialogBuilder(this).setTitle(title)
-                .setSingleChoiceItems(labels, checked, (dialog, which) -> {
-                    dialog.dismiss();
-                    Prefs.get().edit().putInt(key, values[which]).apply();
-                    if ("glass_material".equals(key) || "glass_style".equals(key)) {
-                        recreate();
-                    } else {
-                        buildCategory(cat == null ? "experimental" : cat);
-                    }
-                })
-                .setNegativeButton("取消", null)
-                .show();
+        sheetChoice(title, labels, checked, which -> {
+            Prefs.get().edit().putInt(key, values[which]).apply();
+            if ("glass_material".equals(key) || "glass_style".equals(key)) {
+                recreate();
+            } else {
+                buildCategory(cat == null ? "experimental" : cat);
+            }
+        });
     }
 
     private String toolbarSummary() {
@@ -1937,16 +2124,7 @@ public class SettingsActivity extends AppCompatActivity {
     }
 
     private static String toolbarName(String id) {
-        switch (id) {
-            case "back": return "后退";
-            case "forward": return "前进";
-            case "home": return "主页";
-            case "refresh": return "刷新";
-            case "tabs": return "标签";
-            case "newtab": return "新标签";
-            case "menu": return "菜单";
-            default: return "";
-        }
+        return ToolbarDefs.name(id);
     }
 
     private TextView actionText(String label, final Runnable action) {
@@ -1960,21 +2138,7 @@ public class SettingsActivity extends AppCompatActivity {
     }
 
     private void toolbarDialog() {
-        final Map<String, String> names = new LinkedHashMap<>();
-        names.put("back", "后退");
-        names.put("forward", "前进");
-        names.put("home", "主页");
-        names.put("refresh", "刷新");
-        names.put("tabs", "标签");
-        names.put("newtab", "新标签");
-        names.put("bookmarks", "书签");
-        names.put("downloads", "下载");
-        names.put("share", "分享");
-        names.put("search", "搜索");
-        names.put("find", "页内查找");
-        names.put("settings", "设置");
-        names.put("ai", "AI");
-        names.put("menu", "菜单");
+        final Map<String, String> names = ToolbarDefs.all();
         final List<String> order = new ArrayList<>();
         final List<String> saved = Arrays.asList(Prefs.toolbarItems().split(","));
         for (String id : saved) {
@@ -1989,17 +2153,21 @@ public class SettingsActivity extends AppCompatActivity {
         }
         hidden.remove("menu");
 
-        final LinearLayout list = Ui.column(this);
-        list.setPadding(Ui.dp(this, 8), Ui.dp(this, 4), Ui.dp(this, 8), 0);
-        ScrollView scroll = new ScrollView(this);
-        scroll.addView(list);
-        int maxH = (int) (getResources().getDisplayMetrics().heightPixels * 0.5f);
-        FrameLayout holder = new FrameLayout(this);
-        holder.addView(scroll,
-                new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, maxH));
+        final GlassSheet sheet = new GlassSheet(this);
+        sheet.setPaneTitle("工具栏设置");
+        final LinearLayout list = sheet.content();
+        final int edge = Ui.dp(this, 10);
+        list.setPadding(Ui.dp(this, 8), Ui.dp(this, 6), Ui.dp(this, 8), Ui.dp(this, 6));
         final Runnable[] render = new Runnable[1];
         render[0] = () -> {
             list.removeAllViews();
+            TextView title = Ui.text(this, "工具栏设置", 18, R.color.on_surface);
+            title.setPadding(edge, edge, edge, Ui.dp(this, 2));
+            list.addView(title);
+            TextView note = Ui.text(this, "调整顺序，或隐藏不常用的按钮。", 13,
+                    R.color.on_surface_variant);
+            note.setPadding(edge, Ui.dp(this, 2), edge, Ui.dp(this, 8));
+            list.addView(note);
             for (int i = 0; i < order.size(); i++) {
                 final int index = i;
                 final String id = order.get(i);
@@ -2021,8 +2189,8 @@ public class SettingsActivity extends AppCompatActivity {
                                 visible++;
                             }
                         }
-                        if (visible >= 8) {
-                            toast("最多显示 8 个按钮");
+                        if (visible >= ToolbarDefs.MAX_VISIBLE) {
+                            toast("最多显示 " + ToolbarDefs.MAX_VISIBLE + " 个按钮");
                             return;
                         }
                         hidden.remove(id);
@@ -2043,24 +2211,26 @@ public class SettingsActivity extends AppCompatActivity {
                 }));
                 list.addView(row);
             }
+            TextView save = Ui.text(this, "保存", 15, R.color.primary);
+            save.setGravity(Gravity.CENTER);
+            save.setMinHeight(Ui.dp(this, 48));
+            save.setPadding(edge, Ui.dp(this, 10), edge, Ui.dp(this, 10));
+            save.setBackground(Ui.ripple(this));
+            save.setOnClickListener(v -> {
+                List<String> visible = new ArrayList<>();
+                for (String id : order) {
+                    if (!hidden.contains(id)) visible.add(id);
+                }
+                if (!visible.contains("menu")) visible.add("menu");
+                Prefs.setToolbarItems(String.join(",", visible));
+                sheet.dismiss();
+                buildCategory(cat == null ? "general" : cat);
+            });
+            list.addView(save, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         };
         render[0].run();
-
-        new MaterialAlertDialogBuilder(this)
-                .setTitle("工具栏设置")
-                .setMessage("调整顺序，或隐藏不常用的按钮。")
-                .setView(holder)
-                .setPositiveButton("保存", (d, w) -> {
-                    List<String> visible = new ArrayList<>();
-                    for (String id : order) {
-                        if (!hidden.contains(id)) visible.add(id);
-                    }
-                    if (!visible.contains("menu")) visible.add("menu");
-                    Prefs.setToolbarItems(String.join(",", visible));
-                    buildCategory(cat == null ? "general" : cat);
-                })
-                .setNegativeButton("取消", null)
-                .show();
+        sheet.show();
     }
 
     private void zoomDialog() {
@@ -2070,20 +2240,15 @@ public class SettingsActivity extends AppCompatActivity {
         for (int i = 0; i < values.length; i++) {
             if (values[i] == Prefs.fontZoom()) checked = i;
         }
-        new MaterialAlertDialogBuilder(this)
-                .setTitle("网页字体大小")
-                .setSingleChoiceItems(labels, checked, (dialog, which) -> {
-                    Prefs.setFontZoom(values[which]);
-                    dialog.dismiss();
-                    if (cat == null) {
-                        buildMain();
-                    } else {
-                        buildCategory(cat);
-                    }
-                    toast("重新加载页面后生效");
-                })
-                .setNegativeButton("取消", null)
-                .show();
+        sheetChoice("网页字体大小", labels, checked, which -> {
+            Prefs.setFontZoom(values[which]);
+            if (cat == null) {
+                buildMain();
+            } else {
+                buildCategory(cat);
+            }
+            toast("重新加载页面后生效");
+        });
     }
 
     private void importBookmarks() {
@@ -2177,7 +2342,59 @@ public class SettingsActivity extends AppCompatActivity {
             }).start();
         } else if (requestCode == REQ_HOME_BG) {
             saveHomeBackground(uri);
+        } else if (requestCode == REQ_EXPORT_ARCHIVE) {
+            final int categories = archiveMask();
+            final String password = archivePassword;
+            final String name = uri.getLastPathSegment() == null ? "h-backup.hbk"
+                    : uri.getLastPathSegment();
+            new Thread(() -> {
+                try (OutputStream out = getContentResolver().openOutputStream(uri, "wt")) {
+                    BackupArchive.exportTo(this, out, categories, password);
+                    runOnUiThread(() -> toast("已导出 " + name
+                            + (password.isEmpty() ? "" : "（已加密）")));
+                } catch (Throwable t) {
+                    runOnUiThread(() -> toast("导出失败"));
+                }
+            }).start();
+        } else if (requestCode == REQ_IMPORT_ARCHIVE) {
+            new Thread(() -> {
+                try (InputStream in = getContentResolver().openInputStream(uri)) {
+                    java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+                    byte[] buffer = new byte[16384];
+                    int n;
+                    while ((n = in.read(buffer)) > 0) {
+                        out.write(buffer, 0, n);
+                        if (out.size() > 16 * 1024 * 1024) {
+                            throw new IllegalStateException("文件超过 16MB");
+                        }
+                    }
+                    String text = new String(out.toByteArray(),
+                            java.nio.charset.StandardCharsets.UTF_8).trim();
+                    runOnUiThread(() -> {
+                        if (BackupArchive.isEncrypted(text)) {
+                            askRestorePassword(text);
+                        } else {
+                            runArchiveRestore(text, "");
+                        }
+                    });
+                } catch (Throwable t) {
+                    runOnUiThread(() -> toast("读取备份失败"));
+                }
+            }).start();
         }
+    }
+
+    private int archiveMask() {
+        if (archiveCategories == null) {
+            return BackupArchive.ALL;
+        }
+        int mask = 0;
+        for (int i = 0; i < archiveCategories.length; i++) {
+            if (archiveCategories[i]) {
+                mask |= 1 << i;
+            }
+        }
+        return mask == 0 ? BackupArchive.ALL : mask;
     }
 
     private static final class DotToggle extends View {
